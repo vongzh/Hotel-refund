@@ -13,3 +13,12 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 backend/data/*.db
 *.pyc
+
+# .NET / StayOTA agent
+**/bin/
+**/obj/
+**/.vs/
+stayota-agent/frontend/node_modules/
+stayota-agent/frontend/dist/
+*.user
+*.swp

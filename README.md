@@ -1,3 +1,12 @@
+# 仓库说明
+
+本仓库包含：
+
+1. **原 Hotel-refund Mock MVP**（Python / React）——下方原 README。
+2. **新工程 [`stayota-agent/`](./stayota-agent)**：结合 `hotel` 工作台 + `Hotel-refund` 受控 Workflow，用 **.NET 10 + Vue3（Vben Admin 风格）+ PostgreSQL + Redis** 实现的可运行 MVP。详见 [`stayota-agent/README.md`](./stayota-agent/README.md)。
+
+---
+
 # 去哪儿酒店退款智能客服 Agent MVP
 
 一个面向酒店售后退款场景的非官方、全链路 Mock MVP：Agent 代表模拟的酒店售后团队，在订单事实、成交政策、责任主体和权限边界明确后，用尽可能少的交互给出结论与可执行方案，并把任务推进到可验证结果。

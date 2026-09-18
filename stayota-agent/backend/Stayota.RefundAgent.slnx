@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Stayota.RefundAgent.Api/Stayota.RefundAgent.Api.csproj" />
+    <Project Path="src/Stayota.RefundAgent.Application/Stayota.RefundAgent.Application.csproj" />
+    <Project Path="src/Stayota.RefundAgent.Domain/Stayota.RefundAgent.Domain.csproj" />
+    <Project Path="src/Stayota.RefundAgent.Infrastructure/Stayota.RefundAgent.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Stayota.RefundAgent.Tests/Stayota.RefundAgent.Tests.csproj" />
+  </Folder>
+</Solution>
