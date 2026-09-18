@@ -293,7 +293,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { fetchScenarios, runAgentMessage, respondToApproval } from '@/api/agent'
+import { fetchHosting, fetchScenarios, runAgentMessage, respondToApproval } from '@/api/agent'
 import type { AgentDecision, Scenario } from '@/types'
 
 const scenarios = ref<Scenario[]>([])
@@ -304,6 +304,7 @@ const draft = ref('')
 const loading = ref(false)
 const errorText = ref('')
 const mobilePane = ref<'chat' | 'decision'>('chat')
+const demoEnabled = ref(true)
 
 const pipeline = computed(() => decision.value?.steps ?? [
   { step: '意图识别', status: 'pending', detail: '' },
@@ -317,6 +318,12 @@ const pipeline = computed(() => decision.value?.steps ?? [
 
 onMounted(async () => {
   try {
+    try {
+      const hosting = await fetchHosting()
+      demoEnabled.value = hosting.demoEnabled
+    } catch {
+      demoEnabled.value = true
+    }
     scenarios.value = await fetchScenarios()
     await selectScenario(activeId.value)
   } catch {
@@ -328,7 +335,11 @@ async function selectScenario(id: string) {
   activeId.value = id
   const scenario = scenarios.value.find((s) => s.scenarioId === id)
   if (!scenario) return
-  await run({ message: scenario.entryMessage, scenarioId: id, resetDemo: true })
+  await run({
+    message: scenario.entryMessage,
+    scenarioId: id,
+    ...(demoEnabled.value ? { resetDemo: true } : {}),
+  })
 }
 async function withEvidence() {
   await run({ message: userMessage.value || '已上传证明', scenarioId: activeId.value, hasEvidence: true })

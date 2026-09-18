@@ -21,7 +21,7 @@
       </nav>
       <div class="demo-badge">
         <span class="health">{{ healthText }}</span>
-        <span>Mock Demo</span>
+        <span>{{ modeLabel }}</span>
       </div>
     </header>
     <main class="page-frame">
@@ -38,6 +38,7 @@ import { health } from '@/api/agent'
 const route = useRoute()
 const router = useRouter()
 const healthText = ref('连接中…')
+const modeLabel = ref('…')
 
 const nav = [
   { path: '/design', label: 'Agent 设计' },
@@ -48,14 +49,26 @@ const nav = [
 onMounted(async () => {
   try {
     const h = await health() as {
-      scenarios: number
-      tools: number
+      scenarios?: number
+      tools?: number
       aiProvider?: string
       agent?: string
+      demoEnabled?: boolean
+      productionMode?: string
+      authRequired?: boolean
     }
-    healthText.value = `${h.scenarios} 场景 / ${h.tools} Tools`
+    healthText.value = h.scenarios != null && h.tools != null
+      ? `${h.scenarios} 场景 / ${h.tools} Tools`
+      : (h.agent || '已连接')
+    const bits = [
+      h.demoEnabled === false ? '正式' : 'Demo',
+      h.productionMode || 'Mock',
+      h.authRequired ? 'Auth' : null,
+    ].filter(Boolean)
+    modeLabel.value = bits.join(' · ')
   } catch {
     healthText.value = '后端未连接'
+    modeLabel.value = '离线'
   }
 })
 </script>

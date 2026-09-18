@@ -58,6 +58,30 @@ curl -X POST http://127.0.0.1:5088/api/eval/run
 curl -X POST http://127.0.0.1:5088/api/workflows/run-all
 ```
 
+## 正式收口与 StayOTA 模块融入
+
+### Production 开关（本服务）
+
+```bash
+export ASPNETCORE_ENVIRONMENT=Production
+export ConnectionStrings__Postgres='...'
+export ConnectionStrings__Redis='...'
+export Hosting__ApiKey='...'
+export Production__Mode=Http
+export Production__BaseUrl='https://orders.internal/'
+```
+
+- `DemoEnabled=false`：禁止启动删库、`ResetDemo`、Eval/Workflow 演示端、开放确认签发  
+- Http/Mcp：**不**静默回退 Mock；AI 失败不静默降级 Deterministic（除非显式允许）
+
+### 并入 StayOTA
+
+详见 [`docs/STAYOTA-INTEGRATION.md`](./docs/STAYOTA-INTEGRATION.md)：
+
+- **后端**：独立 Refund Agent 服务（可过渡同 Host 模块挂载）
+- **前端**：本仓 Vue 仅 Demo/联调；正式页后续按 StayOTA 后台风格重做
+- **主站需提供**：鉴权网关、订单/政策只读契约、写回执与幂等、可观测性
+
 ## AI 提供商
 
 默认 `Deterministic`（离线演示）。可在 `appsettings.json` 或环境变量切换：
@@ -74,4 +98,4 @@ export OLLAMA_ENDPOINT=http://127.0.0.1:11434
 export OLLAMA_MODEL=llama3.2
 ```
 
-配置错误时会自动回退到 Deterministic，保证 API 可启动。
+Demo 下配置错误会回退 Deterministic；正式态（`AllowDeterministicFallback=false`）则启动失败，避免静默降级。

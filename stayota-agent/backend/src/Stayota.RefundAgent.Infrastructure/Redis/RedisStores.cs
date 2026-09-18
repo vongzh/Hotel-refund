@@ -18,12 +18,16 @@ public sealed class RedisConfirmationStore(IConnectionMultiplexer mux) : IConfir
     {
         var db = mux.GetDatabase();
         var key = Key(token);
-        var value = await db.StringGetAsync(key);
+        // Atomic get-and-delete to prevent double-spend under concurrency.
+        var value = await db.StringGetDeleteAsync(key);
         if (value.IsNullOrEmpty) return false;
         var expected = $"{caseId}|{orderId}|{version}|{action}";
-        if (!string.Equals(value.ToString(), expected, StringComparison.Ordinal)) return false;
-        await db.KeyDeleteAsync(key);
-        return true;
+        if (string.Equals(value.ToString(), expected, StringComparison.Ordinal))
+            return true;
+
+        // Wrong binding — restore token so a mismatched probe does not burn a valid confirmation.
+        await db.StringSetAsync(key, value, TimeSpan.FromMinutes(10));
+        return false;
     }
 
     private static string Key(string token) => $"refund:confirm:{token}";

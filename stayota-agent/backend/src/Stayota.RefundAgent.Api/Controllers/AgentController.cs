@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+using Stayota.RefundAgent.Application.Ai;
 using Stayota.RefundAgent.Application.Contracts;
 
 namespace Stayota.RefundAgent.Api.Controllers;
@@ -11,13 +13,26 @@ public sealed class AgentController(
     IConfirmationStore confirmationStore,
     IToolGateway tools,
     IEvalRunner evalRunner,
-    IScenarioWorkflow workflow) : ControllerBase
+    IScenarioWorkflow workflow,
+    IOptions<HostingOptions> hostingOptions) : ControllerBase
 {
     [HttpGet("scenarios")]
     public ActionResult<IReadOnlyList<ScenarioDto>> ListScenarios() => Ok(scenarios.List());
 
     [HttpGet("tools")]
     public ActionResult<IReadOnlyList<ToolContractDto>> ListTools() => Ok(tools.ListContracts());
+
+    [HttpGet("hosting")]
+    public ActionResult<object> Hosting()
+    {
+        var h = hostingOptions.Value;
+        return Ok(new
+        {
+            demoEnabled = h.DemoEnabled,
+            authRequired = !string.IsNullOrWhiteSpace(h.ApiKey),
+            resetDatabaseOnStartup = h.ResetDatabaseOnStartup
+        });
+    }
 
     [HttpPost("agent/message")]
     public async Task<ActionResult<AgentDecisionDto>> Message([FromBody] AgentMessageRequest request, CancellationToken ct)
@@ -51,6 +66,7 @@ public sealed class AgentController(
     [HttpPost("workflows/{scenarioId}/run")]
     public async Task<ActionResult<WorkflowRunResultDto>> RunWorkflow(string scenarioId, CancellationToken ct)
     {
+        if (!RequireDemo()) return DemoOnly();
         try
         {
             var result = await workflow.RunAsync(scenarioId, ct);
@@ -65,6 +81,7 @@ public sealed class AgentController(
     [HttpPost("workflows/run-all")]
     public async Task<ActionResult<object>> RunAllWorkflows(CancellationToken ct)
     {
+        if (!RequireDemo()) return DemoOnly();
         var results = new List<WorkflowRunResultDto>();
         foreach (var id in new[] { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L" })
         {
@@ -82,17 +99,23 @@ public sealed class AgentController(
     [HttpPost("confirmations")]
     public async Task<ActionResult<ConfirmActionResponse>> Confirm([FromBody] ConfirmActionRequest request, CancellationToken ct)
     {
+        if (!RequireDemo()) return DemoOnly();
         var token = await confirmationStore.IssueAsync(
             request.CaseId, request.OrderId, request.OrderVersion, request.Action, TimeSpan.FromMinutes(10), ct);
         return Ok(new ConfirmActionResponse(true, "confirmation issued", token));
     }
 
     [HttpGet("eval/cases")]
-    public ActionResult<IReadOnlyList<EvalCaseDto>> EvalCases() => Ok(evalRunner.ListCases());
+    public ActionResult<IReadOnlyList<EvalCaseDto>> EvalCases()
+    {
+        if (!RequireDemo()) return DemoOnly();
+        return Ok(evalRunner.ListCases());
+    }
 
     [HttpPost("eval/run")]
     public async Task<ActionResult<object>> RunEval(CancellationToken ct)
     {
+        if (!RequireDemo()) return DemoOnly();
         var results = await evalRunner.RunAllAsync(ct);
         return Ok(new
         {
@@ -102,4 +125,9 @@ public sealed class AgentController(
             results
         });
     }
+
+    private bool RequireDemo() => hostingOptions.Value.DemoEnabled;
+
+    private ObjectResult DemoOnly() =>
+        StatusCode(StatusCodes.Status403Forbidden, new { message = "endpoint is demo-only; set Hosting:DemoEnabled=true" });
 }

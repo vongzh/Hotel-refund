@@ -20,6 +20,7 @@ public sealed class AgentOrchestrator(
     ISessionStore sessionStore,
     IVerifier verifier,
     IProductionOrderClient production,
+    Microsoft.Extensions.Options.IOptions<HostingOptions> hostingOptions,
     ILogger<AgentOrchestrator> logger) : IAgentOrchestrator
 {
     private readonly ScenarioRouter _router = new();
@@ -29,7 +30,13 @@ public sealed class AgentOrchestrator(
         if (request.ServiceError)
             throw new InvalidOperationException("模拟订单服务响应超时");
 
-        if (request.ResetDemo) await store.ResetDemoAsync(ct);
+        var hosting = hostingOptions.Value;
+        if (request.ResetDemo)
+        {
+            if (!hosting.DemoEnabled)
+                throw new InvalidOperationException("ResetDemo is disabled outside demo mode");
+            await store.ResetDemoAsync(ct);
+        }
         else await store.EnsureSeededAsync(ct);
 
         var scenarioId = _router.Route(request.Message, request.ScenarioId);

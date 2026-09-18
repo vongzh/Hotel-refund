@@ -8,6 +8,19 @@ const http = axios.create({
   timeout: 30000,
 })
 
+const apiKey = import.meta.env.VITE_API_KEY as string | undefined
+if (apiKey) {
+  http.interceptors.request.use((config) => {
+    config.headers['X-Api-Key'] = apiKey
+    return config
+  })
+}
+
+export async function fetchHosting() {
+  const { data } = await http.get<{ demoEnabled: boolean; authRequired: boolean }>('/api/hosting')
+  return data
+}
+
 export async function fetchScenarios() {
   const { data } = await http.get<Scenario[]>('/api/scenarios')
   return data

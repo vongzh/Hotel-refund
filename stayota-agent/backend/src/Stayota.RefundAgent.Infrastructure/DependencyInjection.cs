@@ -20,12 +20,27 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddRefundAgentInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        var pg = configuration.GetConnectionString("Postgres")
-                 ?? "Host=127.0.0.1;Port=5432;Database=stayota_refund;Username=stayota;Password=stayota";
-        var redis = configuration.GetConnectionString("Redis") ?? "127.0.0.1:6379";
+        var hosting = configuration.GetSection(HostingOptions.SectionName).Get<HostingOptions>() ?? new HostingOptions();
+        var isProductionLike = !hosting.DemoEnabled;
+
+        var pg = configuration.GetConnectionString("Postgres");
+        var redis = configuration.GetConnectionString("Redis");
+        if (string.IsNullOrWhiteSpace(pg))
+        {
+            if (isProductionLike)
+                throw new InvalidOperationException("ConnectionStrings:Postgres is required when DemoEnabled=false");
+            pg = "Host=127.0.0.1;Port=5432;Database=stayota_refund;Username=stayota;Password=stayota";
+        }
+        if (string.IsNullOrWhiteSpace(redis))
+        {
+            if (isProductionLike)
+                throw new InvalidOperationException("ConnectionStrings:Redis is required when DemoEnabled=false");
+            redis = "127.0.0.1:6379";
+        }
 
         services.Configure<AiOptions>(configuration.GetSection(AiOptions.SectionName));
         services.Configure<ProductionOptions>(configuration.GetSection(ProductionOptions.SectionName));
+        services.Configure<HostingOptions>(configuration.GetSection(HostingOptions.SectionName));
 
         services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(pg));
         services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redis));
@@ -51,12 +66,16 @@ public static class DependencyInjection
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
         services.AddSingleton<IChatClient>(sp =>
         {
+            var hostOpts = sp.GetRequiredService<IOptions<HostingOptions>>().Value;
             try
             {
                 return sp.GetRequiredService<IChatClientFactory>().Create();
             }
             catch (Exception ex)
             {
+                if (!hostOpts.AllowDeterministicFallback)
+                    throw;
+
                 var logger = sp.GetService<ILoggerFactory>()?.CreateLogger("ChatClientRegistration");
                 logger?.LogWarning(ex, "Falling back to DeterministicRefundChatClient");
                 return new DeterministicRefundChatClient();
@@ -68,6 +87,7 @@ public static class DependencyInjection
 
         services.AddScoped<MockProductionOrderClient>();
         services.AddScoped<HttpProductionOrderClient>();
+        services.AddScoped<McpProductionOrderClient>();
         services.AddScoped<IExternalMcpToolSource, ExternalMcpToolSource>();
         services.AddScoped<IProductionOrderClient>(sp =>
         {
@@ -75,7 +95,7 @@ public static class DependencyInjection
             return mode.ToLowerInvariant() switch
             {
                 "http" => sp.GetRequiredService<HttpProductionOrderClient>(),
-                "mcp" => new LabeledProductionOrderClient("Mcp", sp.GetRequiredService<MockProductionOrderClient>()),
+                "mcp" => sp.GetRequiredService<McpProductionOrderClient>(),
                 _ => sp.GetRequiredService<MockProductionOrderClient>()
             };
         });
@@ -94,18 +114,4 @@ public static class DependencyInjection
 
         return services;
     }
-}
-
-/// <summary>Wraps an order client while advertising a configured production mode label.</summary>
-file sealed class LabeledProductionOrderClient(string mode, IProductionOrderClient inner) : IProductionOrderClient
-{
-    public string Mode => mode;
-    public Task<object?> GetOrderDetailAsync(string orderId, string userId, CancellationToken ct = default)
-        => inner.GetOrderDetailAsync(orderId, userId, ct);
-    public Task<object?> ListUserOrdersAsync(string userId, CancellationToken ct = default)
-        => inner.ListUserOrdersAsync(userId, ct);
-    public Task<object?> GetPolicySnapshotAsync(string policyId, string orderId, CancellationToken ct = default)
-        => inner.GetPolicySnapshotAsync(policyId, orderId, ct);
-    public Task<object?> GetRefundStatusAsync(string refundId, CancellationToken ct = default)
-        => inner.GetRefundStatusAsync(refundId, ct);
 }
