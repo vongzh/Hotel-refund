@@ -10,7 +10,8 @@ public sealed class AgentController(
     IScenarioCatalog scenarios,
     IConfirmationStore confirmationStore,
     IToolGateway tools,
-    IEvalRunner evalRunner) : ControllerBase
+    IEvalRunner evalRunner,
+    IScenarioWorkflow workflow) : ControllerBase
 {
     [HttpGet("scenarios")]
     public ActionResult<IReadOnlyList<ScenarioDto>> ListScenarios() => Ok(scenarios.List());
@@ -30,6 +31,37 @@ public sealed class AgentController(
         {
             return StatusCode(503, new { message = ex.Message });
         }
+    }
+
+    [HttpPost("workflows/{scenarioId}/run")]
+    public async Task<ActionResult<WorkflowRunResultDto>> RunWorkflow(string scenarioId, CancellationToken ct)
+    {
+        try
+        {
+            var result = await workflow.RunAsync(scenarioId, ct);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("workflows/run-all")]
+    public async Task<ActionResult<object>> RunAllWorkflows(CancellationToken ct)
+    {
+        var results = new List<WorkflowRunResultDto>();
+        foreach (var id in new[] { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L" })
+        {
+            results.Add(await workflow.RunAsync(id, ct));
+        }
+        return Ok(new
+        {
+            total = results.Count,
+            succeeded = results.Count(r => r.Succeeded),
+            failed = results.Count(r => !r.Succeeded),
+            results
+        });
     }
 
     [HttpPost("confirmations")]

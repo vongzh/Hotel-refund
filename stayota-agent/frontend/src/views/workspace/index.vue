@@ -69,7 +69,19 @@
           <div><span>意图</span><strong>{{ Math.round(decision.intentConfidence * 100) }}% · {{ decision.intent }}</strong></div>
           <div><span>风险</span><strong>{{ decision.riskScore }}/100 · {{ decision.riskLevel }}</strong></div>
           <div><span>动作</span><strong>{{ actionLabel(decision.action) }}</strong></div>
+          <div><span>Verifier</span><strong :class="decision.verificationPassed ? 'status-success' : 'status-error'">{{ decision.verificationPassed ? '通过' : '未通过' }}</strong></div>
         </div>
+        <a-alert
+          v-if="!decision.verificationPassed"
+          type="error"
+          show-icon
+          :message="(decision.verificationViolations || []).join('；')"
+          style="margin-bottom: 12px"
+        />
+        <h4>槽位明细</h4>
+        <a-descriptions size="small" :column="1" bordered>
+          <a-descriptions-item v-for="(v, k) in decision.slots" :key="k" :label="String(k)">{{ v }}</a-descriptions-item>
+        </a-descriptions>
         <h4>决策轨迹</h4>
         <ol>
           <li v-for="step in decision.steps" :key="step.step">

@@ -45,7 +45,9 @@ public sealed record AgentDecisionDto(
     IReadOnlyList<PolicyMatchDto> PolicyMatches,
     IReadOnlyList<string> ToolSequence,
     TicketDto? Ticket,
-    HotelOrderDto Order);
+    HotelOrderDto Order,
+    bool VerificationPassed,
+    IReadOnlyList<string> VerificationViolations);
 
 public sealed record HotelOrderDto(
     string OrderId,
@@ -131,8 +133,6 @@ public interface IToolGateway
     Task<ToolResult> InvokeAsync(ToolCall call, CancellationToken ct = default);
     IReadOnlyList<ToolContractDto> ListContracts();
 }
-
-public sealed record ToolContractDto(string Name, string Mode, string Purpose);
 
 public sealed record ToolCall(
     string TraceId,

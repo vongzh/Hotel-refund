@@ -26,6 +26,16 @@ export async function runEval() {
   return data as { total: number; passed: number; failed: number; results: unknown[] }
 }
 
+export async function runAllWorkflows() {
+  const { data } = await http.post('/api/workflows/run-all')
+  return data as {
+    total: number
+    succeeded: number
+    failed: number
+    results: Array<{ scenarioId: string; succeeded: boolean; caseStatus: string; toolCalls: string[] }>
+  }
+}
+
 export async function health() {
   const { data } = await http.get('/health')
   return data

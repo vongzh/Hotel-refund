@@ -113,11 +113,11 @@ public sealed class RefundDataStore(AppDbContext db) : IRefundDataStore
         {
             _contracts =
             [
-                new ToolContractDto("get_order_detail", "READ", "order"),
-                new ToolContractDto("get_policy_snapshot", "READ", "policy"),
-                new ToolContractDto("calculate_refund_quote", "READ", "quote"),
-                new ToolContractDto("submit_cancellation", "WRITE", "cancel"),
-                new ToolContractDto("create_human_handoff", "WRITE", "handoff")
+                new ToolContractDto("get_order_detail", "READ", "order", ["ORDER_CONFIRMED", "FACTS_REQUIRED", "DECISION_READY", "TRACKING_REFUND"]),
+                new ToolContractDto("get_policy_snapshot", "READ", "policy", ["ORDER_CONFIRMED", "FACTS_REQUIRED", "DECISION_READY"]),
+                new ToolContractDto("calculate_refund_quote", "READ", "quote", ["DECISION_READY"]),
+                new ToolContractDto("submit_cancellation", "WRITE", "cancel", ["CONFIRMATION_REQUIRED"]),
+                new ToolContractDto("create_human_handoff", "WRITE", "handoff", ["FACTS_REQUIRED", "DECISION_READY", "OPTION_PRESENTED", "WAITING_EXTERNAL", "TRACKING_REFUND"])
             ];
             return;
         }
@@ -126,7 +126,10 @@ public sealed class RefundDataStore(AppDbContext db) : IRefundDataStore
             .Select(t => new ToolContractDto(
                 t.GetProperty("name").GetString()!,
                 t.GetProperty("mode").GetString()!,
-                t.GetProperty("purpose").GetString()!))
+                t.GetProperty("purpose").GetString()!,
+                t.TryGetProperty("allowed_conversation_states", out var states)
+                    ? states.EnumerateArray().Select(x => x.GetString()!).ToList()
+                    : []))
             .ToList();
     }
 

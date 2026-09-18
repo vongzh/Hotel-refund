@@ -14,6 +14,7 @@ public sealed class AgentOrchestrator(
     IToolGateway tools,
     IConfirmationStore confirmationStore,
     ISessionStore sessionStore,
+    IVerifier verifier,
     ILogger<AgentOrchestrator> logger) : IAgentOrchestrator
 {
     private readonly ScenarioRouter _router = new();
@@ -52,7 +53,7 @@ public sealed class AgentOrchestrator(
         steps.Add(new("订单查询", orderTool.Allowed ? "success" : "error", $"status={order.Status}, on_site={order.UserOnSite}"));
 
         var matches = retrieval.Retrieve(order, policy, analyzed.Reason);
-        await tools.InvokeAsync(Read(traceId, "get_policy_snapshot", userId, order, scenario, "FACTS_REQUIRED"), ct);
+        await tools.InvokeAsync(Read(traceId, "get_policy_snapshot", userId, order, scenario, "ORDER_CONFIRMED"), ct);
         steps.Add(new("政策检索", "success", $"{matches[0].PolicyId} · score={matches[0].Score:0.00}"));
 
         var decision = rules.Evaluate(order, policy, scenario, signals);
@@ -86,15 +87,14 @@ public sealed class AgentOrchestrator(
             string? token = null;
             string? idem = null;
             int? version = null;
-            if (toolName is "submit_cancellation" or "submit_order_change")
+            if (toolName is "submit_cancellation" or "submit_order_change" or "accept_supplier_offer" or "reserve_mock_alternative")
             {
                 if (!(request.ConfirmWrite && confirmationToken is not null))
                 {
-                    // still record calculate/validate before confirm
                     continue;
                 }
                 token = request.ConfirmationToken ?? confirmationToken;
-                idem = request.IdempotencyKey ?? $"idem-{scenario.ScenarioId}-{order.OrderId}";
+                idem = request.IdempotencyKey ?? $"idem-{scenario.ScenarioId}-{order.OrderId}-{toolName}";
                 version = order.Version;
             }
 
@@ -108,9 +108,15 @@ public sealed class AgentOrchestrator(
                 if (decision.Action is "RequestInformation" or "RequestEvidence") continue;
             }
 
+            var toolState = ToolStates.GetValueOrDefault(toolName, "DECISION_READY");
+            // scenario-specific overrides aligned with Hotel-refund workflow
+            if (scenario.ScenarioId == "H" && toolName == "create_human_handoff") toolState = "WAITING_EXTERNAL";
+            if (scenario.ScenarioId == "K" && toolName == "create_human_handoff") toolState = "DECISION_READY";
+            if ((scenario.ScenarioId is "E" or "L" or "D") && toolName == "create_human_handoff") toolState = "OPTION_PRESENTED";
+
             var result = await tools.InvokeAsync(new ToolCall(
                 traceId, toolName, access, userId, order.OrderId, scenario.CaseId, decision.RiskLevel,
-                decision.ConversationState, args, token, idem, version), ct);
+                toolState, args, token, idem, version), ct);
             if (result.Allowed) executed.Add(toolName);
         }
 
@@ -123,13 +129,13 @@ public sealed class AgentOrchestrator(
         // Side effects for key actions
         if (decision.Action is "HumanHandoff" or "Recovery" or "FinanceReview" or "ServiceDispute" or "SpecialReview")
         {
-            var handoff = await tools.InvokeAsync(new ToolCall(traceId, "create_human_handoff", ToolAccess.Write, userId, order.OrderId, scenario.CaseId, decision.RiskLevel, "ESCALATED",
+            var handoff = await tools.InvokeAsync(new ToolCall(traceId, "create_human_handoff", ToolAccess.Write, userId, order.OrderId, scenario.CaseId, decision.RiskLevel, scenario.ScenarioId switch { "H" => "WAITING_EXTERNAL", "K" => "DECISION_READY", _ => "OPTION_PRESENTED" },
                 new Dictionary<string, object?> { ["summary"] = decision.Conclusion }, IdempotencyKey: $"ho-{scenario.ScenarioId}-{runId}"), ct);
             if (handoff.Allowed) executed.Add("create_human_handoff");
         }
         if (decision.Action == "NegotiateWithHotel")
         {
-            await tools.InvokeAsync(Read(traceId, "build_supplier_case_draft", userId, order, scenario, "DECISION_READY"), ct);
+            await tools.InvokeAsync(Read(traceId, "build_supplier_case_draft", userId, order, scenario, "FACTS_REQUIRED"), ct);
             await tools.InvokeAsync(new ToolCall(traceId, "create_supplier_case", ToolAccess.Write, userId, order.OrderId, scenario.CaseId, decision.RiskLevel, "CONFIRMATION_REQUIRED",
                 new Dictionary<string, object?>(), IdempotencyKey: $"sup-{scenario.ScenarioId}-{runId}"), ct);
             executed.Add("create_supplier_case");
@@ -143,7 +149,7 @@ public sealed class AgentOrchestrator(
         if ((decision.Action is "Recovery" or "HumanHandoff") && scenario.ScenarioId is "D" or "E")
         {
             await tools.InvokeAsync(Read(traceId, "verify_fulfillment_issue", userId, order, scenario, "DECISION_READY"), ct);
-            await tools.InvokeAsync(Read(traceId, "get_alternative_hotels", userId, order, scenario, "OPTION_PRESENTED"), ct);
+            await tools.InvokeAsync(Read(traceId, "get_alternative_hotels", userId, order, scenario, "DECISION_READY"), ct);
         }
         if (signals.HasEvidence && scenario.ScenarioId is "G" or "F" or "H")
         {
@@ -203,7 +209,7 @@ public sealed class AgentOrchestrator(
 
         logger.LogInformation("Scenario {Scenario} action {Action}", scenario.ScenarioId, decision.Action);
 
-        return new AgentDecisionDto(
+        var dto = new AgentDecisionDto(
             traceId, runId, scenario.CaseId, scenario.ScenarioId,
             analyzed.Intent, analyzed.Confidence, decision.RiskLevel, decision.RiskScore,
             decision.Action, decision.Conclusion, decision.PlanTitle, decision.PlanCopy,
@@ -212,8 +218,48 @@ public sealed class AgentOrchestrator(
             decision.ConversationState, decision.CaseStatus,
             steps, analyzed.Slots, matches, executed.Distinct().ToList(), ticket,
             new HotelOrderDto(order.OrderId, order.HotelName, order.CheckIn, order.CheckOut, order.PaidAmount, order.Currency,
-                order.Status, order.UserOnSite, order.PolicyId, order.Version, order.RoomType, order.RoomCount));
+                order.Status, order.UserOnSite, order.PolicyId, order.Version, order.RoomType, order.RoomCount),
+            false, Array.Empty<string>());
+        var verification = verifier.VerifyDecision(dto);
+        return dto with { VerificationPassed = verification.Passed, VerificationViolations = verification.Violations };
     }
+
+    private static readonly Dictionary<string, string> ToolStates = new()
+    {
+        ["list_user_orders"] = "INTENT_READY",
+        ["get_order_detail"] = "ORDER_CONFIRMED",
+        ["get_policy_snapshot"] = "ORDER_CONFIRMED",
+        ["list_after_sale_events"] = "FACTS_REQUIRED",
+        ["calculate_refund_quote"] = "DECISION_READY",
+        ["validate_action_permission"] = "DECISION_READY",
+        ["submit_cancellation"] = "CONFIRMATION_REQUIRED",
+        ["get_refund_status"] = "TRACKING_REFUND",
+        ["get_payment_events"] = "TRACKING_REFUND",
+        ["schedule_deadline_action"] = "TRACKING_REFUND",
+        ["create_payment_investigation"] = "WAITING_EXTERNAL",
+        ["verify_fulfillment_issue"] = "ORDER_CONFIRMED",
+        ["get_alternative_hotels"] = "DECISION_READY",
+        ["get_guarantee_quote"] = "DECISION_READY",
+        ["create_human_handoff"] = "OPTION_PRESENTED",
+        ["build_supplier_case_draft"] = "FACTS_REQUIRED",
+        ["create_supplier_case"] = "CONFIRMATION_REQUIRED",
+        ["submit_evidence_metadata"] = "FACTS_REQUIRED",
+        ["extract_evidence_fields"] = "FACTS_REQUIRED",
+        ["create_exception_review"] = "DECISION_READY",
+        ["create_service_dispute_case"] = "DECISION_READY",
+        ["get_change_quote"] = "DECISION_READY",
+        ["submit_order_change"] = "CONFIRMATION_REQUIRED",
+        ["create_finance_case"] = "DECISION_READY",
+        ["get_responsibility_chain"] = "DECISION_READY",
+        ["get_group_order_breakdown"] = "FACTS_REQUIRED",
+        ["get_partial_cancel_quote"] = "DECISION_READY",
+        ["get_supplier_case"] = "WAITING_EXTERNAL",
+        ["accept_supplier_offer"] = "OPTION_PRESENTED",
+        ["get_handoff_status"] = "ESCALATED",
+        ["confirm_recovery_outcome"] = "ESCALATED",
+        ["reserve_mock_alternative"] = "OPTION_PRESENTED",
+    };
+
 
     private static bool NeedsEvidence(string scenarioId, AgentSignals signals) =>
         scenarioId is "G" || (scenarioId is "F" && !signals.HasNegotiationReason);

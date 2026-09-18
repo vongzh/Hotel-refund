@@ -27,6 +27,8 @@ public static class DependencyInjection
         services.AddScoped<IRulesEngine, RulesEngine>();
         services.AddScoped<IToolGateway, ToolGateway>();
         services.AddScoped<IAgentOrchestrator, AgentOrchestrator>();
+        services.AddScoped<IScenarioWorkflow, ScenarioWorkflow>();
+        services.AddSingleton<IVerifier, Verifier>();
         services.AddScoped<IEvalRunner, EvalRunner>();
         services.AddSingleton<IConfirmationStore, RedisConfirmationStore>();
         services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();

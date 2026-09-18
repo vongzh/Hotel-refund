@@ -68,10 +68,13 @@ export interface AgentDecision {
     roomType: string
     roomCount: number
   }
+  verificationPassed: boolean
+  verificationViolations: string[]
 }
 
 export interface ToolContract {
   name: string
   mode: string
   purpose: string
+  allowedConversationStates?: string[]
 }

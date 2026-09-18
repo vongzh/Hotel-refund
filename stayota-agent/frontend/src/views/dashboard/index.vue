@@ -27,10 +27,14 @@
 
     <div class="page-card">
       <div class="head">
-        <h3>Badcase 闭环</h3>
-        <a-button type="primary" :loading="evalLoading" @click="runOfflineEval">跑 36 条离线 Eval</a-button>
+        <h3>Badcase 闭环 / 回归验证</h3>
+        <a-space>
+          <a-button :loading="wfLoading" @click="runWorkflowBatch">跑 A–L Workflow</a-button>
+          <a-button type="primary" :loading="evalLoading" @click="runOfflineEval">跑 36 条离线 Eval</a-button>
+        </a-space>
       </div>
       <a-alert v-if="evalSummary" type="success" show-icon :message="evalSummary" style="margin-bottom: 12px" />
+      <a-alert v-if="wfSummary" type="info" show-icon :message="wfSummary" style="margin-bottom: 12px" />
       <a-table :columns="badCols" :data-source="badcases" :pagination="false" row-key="type" size="small" />
     </div>
   </div>
@@ -39,10 +43,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { runEval } from '@/api/agent'
+import { runAllWorkflows, runEval } from '@/api/agent'
 
 const evalLoading = ref(false)
+const wfLoading = ref(false)
 const evalSummary = ref('')
+const wfSummary = ref('')
 
 const metrics = [
   { group: '结果', name: '一次解决率', value: '71.2%', note: '未达目标，需压缩二次进线' },
@@ -89,6 +95,19 @@ async function runOfflineEval() {
     message.error('Eval 运行失败')
   } finally {
     evalLoading.value = false
+  }
+}
+
+async function runWorkflowBatch() {
+  wfLoading.value = true
+  try {
+    const res = await runAllWorkflows()
+    wfSummary.value = `Workflow ${res.succeeded}/${res.total} succeeded`
+    message.success(wfSummary.value)
+  } catch {
+    message.error('Workflow 运行失败')
+  } finally {
+    wfLoading.value = false
   }
 }
 </script>

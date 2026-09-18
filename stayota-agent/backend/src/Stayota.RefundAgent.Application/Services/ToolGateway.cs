@@ -63,6 +63,15 @@ public sealed class ToolGateway(
         if (string.IsNullOrWhiteSpace(call.UserId))
             return await Audit(call, false, false, null, "missing user identity", ct);
 
+        var contract = contracts.First(c => c.Name == call.ToolName);
+        if (contract.AllowedConversationStates.Count > 0 &&
+            !string.IsNullOrWhiteSpace(call.ConversationState) &&
+            !contract.AllowedConversationStates.Contains(call.ConversationState))
+        {
+            return await Audit(call, false, false, null,
+                $"tool {call.ToolName} not allowed in state {call.ConversationState}", ct);
+        }
+
         var isWrite = WriteTools.Contains(call.ToolName);
 
         if (isWrite && call.RiskLevel == RiskLevel.L3 && call.ToolName is "submit_cancellation" or "submit_order_change")

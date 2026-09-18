@@ -11,6 +11,9 @@
 - 意图 · 槽位 · 政策检索 Top3 · 规则引擎 · 风险分层
 - Session（Redis）/ Case Event / Workflow Trace（PostgreSQL）
 - 36 条离线 Eval（`POST /api/eval/run`）
+- A–L 显式 Workflow 状态机（`POST /api/workflows/run-all`）
+- Tool `allowed_conversation_states` 白名单门禁
+- Verifier 决策/工作流断言
 - 前端三页：Agent 设计 / 智能处理台 / 运营看板
 
 ## 启动
