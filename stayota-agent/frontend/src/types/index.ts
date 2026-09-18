@@ -1,10 +1,12 @@
 export interface Scenario {
-  code: string
-  name: string
+  scenarioId: string
+  title: string
   group: string
   goal: string
   entryMessage: string
   riskLevel: string
+  expectedRoute: string
+  requiredTools: string[]
 }
 
 export interface DecisionStep {
@@ -14,11 +16,26 @@ export interface DecisionStep {
   score?: number
 }
 
+export interface PolicyMatch {
+  policyId: string
+  title: string
+  score: number
+  summary: string
+}
+
+export interface Ticket {
+  ticketId: string
+  priority: string
+  queue: string
+  summary: string
+  facts: string[]
+}
+
 export interface AgentDecision {
   traceId: string
   runId: string
   caseId: string
-  scenarioCode: string
+  scenarioId: string
   intent: string
   intentConfidence: number
   riskLevel: string
@@ -30,17 +47,31 @@ export interface AgentDecision {
   refundAmount?: number
   feeAmount?: number
   reply: string
+  conversationState: string
+  caseStatus: string
   steps: DecisionStep[]
   slots: Record<string, string>
+  policyMatches: PolicyMatch[]
+  toolSequence: string[]
+  ticket?: Ticket
   order: {
     orderId: string
     hotelName: string
     checkIn: string
     checkOut: string
     amount: number
+    currency: string
     status: string
-    arrived: boolean
-    cancelPolicyCode: string
+    userOnSite: boolean
+    policyId: string
     version: number
+    roomType: string
+    roomCount: number
   }
+}
+
+export interface ToolContract {
+  name: string
+  mode: string
+  purpose: string
 }

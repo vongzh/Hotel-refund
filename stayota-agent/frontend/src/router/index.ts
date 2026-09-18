@@ -10,6 +10,12 @@ const router = createRouter({
       redirect: '/workspace',
       children: [
         {
+          path: 'design',
+          name: 'Design',
+          component: () => import('@/views/design/index.vue'),
+          meta: { title: 'Agent 设计' },
+        },
+        {
           path: 'workspace',
           name: 'Workspace',
           component: () => import('@/views/workspace/index.vue'),

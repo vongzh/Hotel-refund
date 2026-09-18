@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Stayota.RefundAgent.Application.Contracts;
 using Stayota.RefundAgent.Application.Services;
 using Stayota.RefundAgent.Domain;
 using Stayota.RefundAgent.Domain.Entities;
@@ -11,9 +12,11 @@ public sealed class RefundDataStore(AppDbContext db) : IRefundDataStore
 {
     private static readonly object Gate = new();
     private static bool _seeded;
+    private static List<ToolContractDto> _contracts = [];
 
     public async Task EnsureSeededAsync(CancellationToken ct = default)
     {
+        LoadContracts();
         if (_seeded && await db.Scenarios.AnyAsync(ct)) return;
         lock (Gate)
         {
@@ -38,33 +41,34 @@ public sealed class RefundDataStore(AppDbContext db) : IRefundDataStore
         await EnsureSeededAsync(ct);
     }
 
-    public ScenarioFixture GetScenario(string code) =>
-        db.Scenarios.AsNoTracking().First(x => x.Code == code);
+    public ScenarioFixture GetScenario(string scenarioId) =>
+        db.Scenarios.AsNoTracking().First(x => x.ScenarioId == scenarioId.ToUpperInvariant());
 
     public IReadOnlyList<ScenarioFixture> ListScenarios() =>
-        db.Scenarios.AsNoTracking().OrderBy(x => x.Id).ToList();
+        db.Scenarios.AsNoTracking().OrderBy(x => x.ScenarioId).ToList();
 
     public Task<HotelOrder?> GetOrderAsync(string orderId, CancellationToken ct = default) =>
         db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.OrderId == orderId, ct);
 
-    public Task<PolicySnapshot?> GetPolicyAsync(string code, CancellationToken ct = default) =>
-        db.Policies.AsNoTracking().FirstOrDefaultAsync(x => x.Code == code, ct);
+    public async Task<IReadOnlyList<HotelOrder>> ListOrdersAsync(string userId, CancellationToken ct = default) =>
+        await db.Orders.AsNoTracking().Where(x => x.UserId == userId).ToListAsync(ct);
+
+    public Task<PolicySnapshot?> GetPolicyAsync(string policyId, CancellationToken ct = default) =>
+        db.Policies.AsNoTracking().FirstOrDefaultAsync(x => x.PolicyId == policyId, ct);
 
     public async Task<RefundCase> UpsertCaseAsync(RefundCase refundCase, CancellationToken ct = default)
     {
         var existing = await db.Cases.FirstOrDefaultAsync(x => x.CaseId == refundCase.CaseId, ct);
-        if (existing is null)
-        {
-            db.Cases.Add(refundCase);
-        }
+        if (existing is null) db.Cases.Add(refundCase);
         else
         {
             existing.Status = refundCase.Status;
             existing.RiskLevel = refundCase.RiskLevel;
             existing.Intent = refundCase.Intent;
+            existing.RecommendedAction = refundCase.RecommendedAction;
             existing.QuoteRefundAmount = refundCase.QuoteRefundAmount;
             existing.QuoteFeeAmount = refundCase.QuoteFeeAmount;
-            existing.RecommendedAction = refundCase.RecommendedAction;
+            existing.ConversationState = refundCase.ConversationState;
             existing.UpdatedAt = refundCase.UpdatedAt;
         }
         await db.SaveChangesAsync(ct);
@@ -95,129 +99,143 @@ public sealed class RefundDataStore(AppDbContext db) : IRefundDataStore
         await db.SaveChangesAsync(ct);
     }
 
+    public IReadOnlyList<ToolContractDto> GetToolContracts()
+    {
+        LoadContracts();
+        return _contracts;
+    }
+
+    private static void LoadContracts()
+    {
+        if (_contracts.Count > 0) return;
+        var path = ResolvePath("contracts/tool-contracts.json");
+        if (!File.Exists(path))
+        {
+            _contracts =
+            [
+                new ToolContractDto("get_order_detail", "READ", "order"),
+                new ToolContractDto("get_policy_snapshot", "READ", "policy"),
+                new ToolContractDto("calculate_refund_quote", "READ", "quote"),
+                new ToolContractDto("submit_cancellation", "WRITE", "cancel"),
+                new ToolContractDto("create_human_handoff", "WRITE", "handoff")
+            ];
+            return;
+        }
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        _contracts = doc.RootElement.GetProperty("tools").EnumerateArray()
+            .Select(t => new ToolContractDto(
+                t.GetProperty("name").GetString()!,
+                t.GetProperty("mode").GetString()!,
+                t.GetProperty("purpose").GetString()!))
+            .ToList();
+    }
+
+    private static string ResolvePath(string relative)
+    {
+        var root = Environment.GetEnvironmentVariable("STAYOTA_AGENT_ROOT");
+        if (!string.IsNullOrWhiteSpace(root)) return Path.Combine(root, relative);
+        var candidates = new[]
+        {
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../", relative)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), relative)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../", relative)),
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../", relative)),
+        };
+        return candidates.FirstOrDefault(File.Exists) ?? candidates[0];
+    }
+
     private void SeedSync()
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        db.Policies.AddRange(
-            new PolicySnapshot
+        var hotels = new Dictionary<string, string>
+        {
+            ["A"] = "杭州湖畔演示酒店", ["B"] = "上海外滩演示酒店", ["C"] = "苏州园林演示酒店",
+            ["D"] = "南京夫子庙演示酒店", ["E"] = "广州塔景演示酒店", ["F"] = "厦门海景演示酒店",
+            ["G"] = "南城悦居酒店（演示）", ["H"] = "深圳湾演示酒店", ["I"] = "成都宽窄演示酒店",
+            ["J"] = "武汉会展演示酒店", ["K"] = "东京湾演示酒店", ["L"] = "北京国贸团体酒店"
+        };
+
+        var fixturePath = ResolvePath("mock/scenario-fixtures.json");
+        using var fixtures = JsonDocument.Parse(File.ReadAllText(fixturePath));
+        foreach (var s in fixtures.RootElement.GetProperty("scenarios").EnumerateArray())
+        {
+            var id = s.GetProperty("scenario_id").GetString()!;
+            var risk = Enum.Parse<RiskLevel>(s.GetProperty("risk_level").GetString()!);
+            var tools = s.GetProperty("required_tools").EnumerateArray().Select(x => x.GetString()!).ToList();
+            var states = s.GetProperty("expected_conversation_states").EnumerateArray().Select(x => x.GetString()!).ToList();
+            var asserts = s.GetProperty("success_assertions").EnumerateArray().Select(x => x.GetString()!).ToList();
+            db.Scenarios.Add(new ScenarioFixture
             {
-                PolicyId = "P1", Code = "FREE-CANCEL", Title = "入住前免费取消",
-                Summary = "入住日 18:00 前可免费取消", FreeCancel = true,
-                Authority = "platform", EffectiveAt = DateTimeOffset.UtcNow.AddYears(-1)
-            },
-            new PolicySnapshot
+                ScenarioId = id,
+                Title = s.GetProperty("title").GetString()!,
+                EntryMessage = s.GetProperty("entry_message").GetString()!,
+                UserId = s.GetProperty("user_id").GetString()!,
+                OrderId = s.GetProperty("order_id").GetString()!,
+                CaseId = s.GetProperty("case_id").GetString()!,
+                RiskLevel = risk,
+                ExpectedRoute = s.GetProperty("expected_route").GetString()!,
+                ExpectedCaseStatus = s.GetProperty("expected_case_status").GetString()!,
+                RequiredToolsJson = JsonSerializer.Serialize(tools),
+                ExpectedStatesJson = JsonSerializer.Serialize(states),
+                SuccessAssertionsJson = JsonSerializer.Serialize(asserts),
+                Group = id switch
+                {
+                    "A" or "B" or "F" or "I" => "取消与变更",
+                    "C" or "J" => "退款与支付",
+                    "D" or "E" or "H" => "履约与住宿",
+                    _ => "特殊审核"
+                },
+                Goal = s.GetProperty("expected_route").GetString()!
+            });
+        }
+
+        var orderPath = ResolvePath("mock/orders.json");
+        using var orders = JsonDocument.Parse(File.ReadAllText(orderPath));
+        foreach (var o in orders.RootElement.GetProperty("orders").EnumerateArray())
+        {
+            var sid = o.GetProperty("scenario_id").GetString()!;
+            var amount = o.GetProperty("amount");
+            db.Orders.Add(new HotelOrder
             {
-                PolicyId = "P2", Code = "DEDUCT-HALF", Title = "阶梯扣费取消",
-                Summary = "取消扣除约 50% 房费", FreeCancel = false, DeductionAmount = null,
-                Authority = "platform", EffectiveAt = DateTimeOffset.UtcNow.AddYears(-1)
-            },
-            new PolicySnapshot
-            {
-                PolicyId = "P3", Code = "NON-REFUNDABLE", Title = "不可取消",
-                Summary = "售出不可取消，特殊原因可协商", FreeCancel = false,
-                Authority = "hotel", EffectiveAt = DateTimeOffset.UtcNow.AddYears(-1)
-            },
-            new PolicySnapshot
-            {
-                PolicyId = "P4", Code = "HTL-REFUND-006", Title = "航班取消例外",
-                Summary = "航班取消需证明后进入协商", FreeCancel = false,
-                Authority = "platform", EffectiveAt = DateTimeOffset.UtcNow.AddYears(-1)
+                OrderId = o.GetProperty("order_id").GetString()!,
+                ScenarioId = sid,
+                UserId = o.GetProperty("user_id").GetString()!,
+                HotelName = hotels[sid],
+                PolicyId = o.GetProperty("policy_id").GetString()!,
+                PaymentId = o.GetProperty("payment_id").GetString()!,
+                RefundId = o.TryGetProperty("refund_id", out var rid) ? rid.GetString() : null,
+                Status = o.GetProperty("status").GetString()!,
+                Version = o.GetProperty("version").GetInt32(),
+                CheckIn = DateOnly.Parse(o.GetProperty("check_in").GetString()!),
+                CheckOut = DateOnly.Parse(o.GetProperty("check_out").GetString()!),
+                RoomType = o.GetProperty("room_type").GetString()!,
+                RoomCount = o.GetProperty("room_count").GetInt32(),
+                PaidAmount = amount.GetProperty("paid").GetDecimal(),
+                Currency = amount.GetProperty("currency").GetString()!,
+                UserOnSite = o.TryGetProperty("fulfillment_alert", out var fa) && fa.TryGetProperty("user_on_site", out var uos) && uos.GetBoolean(),
+                ChannelType = o.GetProperty("channel_type").GetString()!,
+                ExtraJson = o.ToString()
             });
 
-        db.Orders.AddRange(
-            new HotelOrder
+            db.Policies.Add(new PolicySnapshot
             {
-                OrderId = "SO20260918001", UserId = "u_demo", HotelName = "杭州湖畔演示酒店",
-                CheckIn = today.AddDays(1), CheckOut = today.AddDays(2), Amount = 688m,
-                Status = "confirmed", Arrived = false, CancelPolicyCode = "FREE-CANCEL", Version = 1,
-                CreatedAt = DateTimeOffset.UtcNow
-            },
-            new HotelOrder
-            {
-                OrderId = "SO20260918002", UserId = "u_demo", HotelName = "上海外滩演示酒店",
-                CheckIn = today, CheckOut = today.AddDays(1), Amount = 1200m,
-                Status = "confirmed", Arrived = false, CancelPolicyCode = "DEDUCT-HALF", Version = 1,
-                CreatedAt = DateTimeOffset.UtcNow
-            },
-            new HotelOrder
-            {
-                OrderId = "SO20260918003", UserId = "u_demo", HotelName = "北京国贸演示酒店",
-                CheckIn = today, CheckOut = today.AddDays(2), Amount = 1280m,
-                Status = "confirmed", Arrived = false, CancelPolicyCode = "NON-REFUNDABLE", Version = 1,
-                CreatedAt = DateTimeOffset.UtcNow
-            },
-            new HotelOrder
-            {
-                OrderId = "SO20260918004", UserId = "u_demo", HotelName = "南城悦居酒店（演示）",
-                CheckIn = today, CheckOut = today.AddDays(1), Amount = 488m,
-                Status = "confirmed", Arrived = false, CancelPolicyCode = "HTL-REFUND-006", Version = 1,
-                CreatedAt = DateTimeOffset.UtcNow
-            },
-            new HotelOrder
-            {
-                OrderId = "SO20260918005", UserId = "u_demo", HotelName = "广州塔景演示酒店",
-                CheckIn = today, CheckOut = today.AddDays(1), Amount = 760m,
-                Status = "confirmed", Arrived = true, CancelPolicyCode = "NON-REFUNDABLE", Version = 1,
-                CreatedAt = DateTimeOffset.UtcNow
-            },
-            new HotelOrder
-            {
-                OrderId = "SO20260918006", UserId = "u_demo", HotelName = "成都宽窄演示酒店",
-                CheckIn = today.AddDays(-3), CheckOut = today.AddDays(-2), Amount = 860m,
-                Status = "refunding", Arrived = false, CancelPolicyCode = "FREE-CANCEL", Version = 2,
-                CreatedAt = DateTimeOffset.UtcNow
-            },
-            new HotelOrder
-            {
-                OrderId = "SO20260918007", UserId = "u_demo", HotelName = "深圳湾演示酒店",
-                CheckIn = today.AddDays(2), CheckOut = today.AddDays(3), Amount = 1600m,
-                Status = "confirmed", Arrived = false, CancelPolicyCode = "DEDUCT-HALF", Version = 1,
-                CreatedAt = DateTimeOffset.UtcNow
+                PolicyId = o.GetProperty("policy_id").GetString()!,
+                ScenarioId = sid,
+                Title = sid switch
+                {
+                    "A" => "入住前免费取消",
+                    "B" => "阶梯扣费取消",
+                    "F" => "不可取消例外协商",
+                    "G" => "航班取消例外",
+                    _ => $"场景{sid}政策快照"
+                },
+                Summary = "成交时政策快照（Mock）",
+                RuleCode = o.GetProperty("policy_id").GetString()!,
+                FreeCancel = sid == "A",
+                FixedFee = sid == "B" ? 600 : null,
+                Authority = sid is "K" ? "supplier" : "platform",
+                Tags = sid
             });
-
-        db.Scenarios.AddRange(
-            new ScenarioFixture
-            {
-                Id = ScenarioId.FreeCancellation, Code = "free-cancellation", Name = "免费取消",
-                Group = "取消与变更", OrderId = "SO20260918001", RiskLevel = RiskLevel.L1,
-                EntryMessage = "帮我取消明天去杭州的酒店。", Goal = "验证确定性退款"
-            },
-            new ScenarioFixture
-            {
-                Id = ScenarioId.DeductedCancel, Code = "deducted-cancel", Name = "扣费取消",
-                Group = "取消与变更", OrderId = "SO20260918002", RiskLevel = RiskLevel.L1,
-                EntryMessage = "今天不去了，取消要扣多少钱？", Goal = "验证损失透明"
-            },
-            new ScenarioFixture
-            {
-                Id = ScenarioId.NonCancellable, Code = "non-cancellable", Name = "不可取消",
-                Group = "取消与变更", OrderId = "SO20260918003", RiskLevel = RiskLevel.L2,
-                EntryMessage = "临时有事去不了了，酒店说不能退，能帮我争取吗？", Goal = "验证例外协商"
-            },
-            new ScenarioFixture
-            {
-                Id = ScenarioId.FlightCancelled, Code = "flight-cancelled", Name = "航班取消",
-                Group = "特殊审核", OrderId = "SO20260918004", RiskLevel = RiskLevel.L2,
-                EntryMessage = "航班突然取消了，今晚肯定赶不到酒店，我想申请退款。", Goal = "验证材料与协商"
-            },
-            new ScenarioFixture
-            {
-                Id = ScenarioId.NoRoomOnArrival, Code = "no-room", Name = "到店无房",
-                Group = "履约异常", OrderId = "SO20260918005", RiskLevel = RiskLevel.L3,
-                EntryMessage = "我已经在前台了，他们说没有我的房间。", Goal = "验证紧急人工"
-            },
-            new ScenarioFixture
-            {
-                Id = ScenarioId.RefundProgress, Code = "refund-progress", Name = "退款进度",
-                Group = "退款与支付", OrderId = "SO20260918006", RiskLevel = RiskLevel.L1,
-                EntryMessage = "三天前说退了，怎么还没收到？", Goal = "验证预期管理"
-            },
-            new ScenarioFixture
-            {
-                Id = ScenarioId.PaymentAnomaly, Code = "payment-anomaly", Name = "支付异常",
-                Group = "退款与支付", OrderId = "SO20260918007", RiskLevel = RiskLevel.L3,
-                EntryMessage = "同一笔房费扣了两次，押金也没退。", Goal = "验证支付语义"
-            });
+        }
 
         db.SaveChanges();
     }

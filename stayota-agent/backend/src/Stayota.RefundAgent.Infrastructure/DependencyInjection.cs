@@ -22,9 +22,12 @@ public static class DependencyInjection
 
         services.AddScoped<IRefundDataStore, RefundDataStore>();
         services.AddScoped<IScenarioCatalog, ScenarioCatalog>();
+        services.AddSingleton<IIntentService, IntentService>();
+        services.AddSingleton<IPolicyRetrieval, PolicyRetrieval>();
         services.AddScoped<IRulesEngine, RulesEngine>();
         services.AddScoped<IToolGateway, ToolGateway>();
         services.AddScoped<IAgentOrchestrator, AgentOrchestrator>();
+        services.AddScoped<IEvalRunner, EvalRunner>();
         services.AddSingleton<IConfirmationStore, RedisConfirmationStore>();
         services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
         services.AddSingleton<ISessionStore, RedisSessionStore>();

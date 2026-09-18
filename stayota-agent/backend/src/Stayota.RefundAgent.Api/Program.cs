@@ -6,6 +6,9 @@ using Stayota.RefundAgent.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var agentRoot = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "../../.."));
+Environment.SetEnvironmentVariable("STAYOTA_AGENT_ROOT", agentRoot);
+
 builder.Services.AddRefundAgentInfrastructure(builder.Configuration);
 builder.Services.AddControllers().AddJsonOptions(o =>
 {
@@ -22,6 +25,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.EnsureDeletedAsync();
     await db.Database.EnsureCreatedAsync();
     var store = scope.ServiceProvider.GetRequiredService<Stayota.RefundAgent.Application.Services.IRefundDataStore>();
     await store.EnsureSeededAsync();
@@ -31,10 +35,18 @@ app.UseSwagger();
 app.UseSwaggerUI();
 app.UseCors();
 app.MapControllers();
-app.MapGet("/health", async (AppDbContext db) =>
+app.MapGet("/health", async (AppDbContext db, IToolGateway tools) =>
 {
     var scenarios = await db.Scenarios.CountAsync();
-    return Results.Ok(new { status = "ok", scenarios, database = "postgresql", cache = "redis" });
+    return Results.Ok(new
+    {
+        status = "ok",
+        scenarios,
+        tools = tools.ListContracts().Count,
+        database = "postgresql",
+        cache = "redis",
+        agentRoot = Environment.GetEnvironmentVariable("STAYOTA_AGENT_ROOT")
+    });
 });
 
 app.Run();

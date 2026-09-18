@@ -6,152 +6,90 @@ namespace Stayota.RefundAgent.Application.Services;
 
 public sealed class RulesEngine : IRulesEngine
 {
-    public RuleDecision Evaluate(HotelOrder order, PolicySnapshot policy, ScenarioId scenario, bool hasEvidence)
+    public RuleDecision Evaluate(HotelOrder order, PolicySnapshot policy, ScenarioFixture scenario, AgentSignals signals)
     {
-        return scenario switch
+        if (signals.ServiceError)
         {
-            ScenarioId.FreeCancellation => FreeCancel(order, policy),
-            ScenarioId.DeductedCancel => Deducted(order),
-            ScenarioId.NonCancellable => NonCancel(order, hasEvidence),
-            ScenarioId.FlightCancelled => Flight(order, hasEvidence),
-            ScenarioId.NoRoomOnArrival => NoRoom(order),
-            ScenarioId.RefundProgress => Progress(order),
-            ScenarioId.PaymentAnomaly => Payment(order),
-            _ => FreeCancel(order, policy)
+            return new("Clarify", RiskLevel.L2, 40, 0, 0,
+                "订单服务暂时不可用", "请稍后重新查询", "模拟订单查询失败，请稍后重试。",
+                "SERVICE_ERROR", false, false, "START", "OPEN");
+        }
+
+        if (signals.LowConfidence)
+        {
+            return new("Clarify", RiskLevel.L1, 35, 0, 0,
+                "当前意图置信度不足", "先澄清诉求", "请补充你希望取消、查进度还是协商退款。",
+                "LOW_CONFIDENCE", false, false, "INTENT_READY", "OPEN");
+        }
+
+        return scenario.ScenarioId switch
+        {
+            "A" => Dec("ConfirmCancel", RiskLevel.L1, 18, order.PaidAmount, 0,
+                "可以免费取消", "免费取消并原路退款",
+                $"确认后立即取消，预计退回 {order.Currency} {order.PaidAmount:0.##}。",
+                policy.RuleCode, true, false, "CONFIRMATION_REQUIRED", "WAITING_USER_CONFIRM"),
+            "B" => Dec("ConfirmCancel", RiskLevel.L1, 28, order.PaidAmount / 2, order.PaidAmount / 2,
+                "可以取消，但会扣除部分房费", "接受扣费并取消",
+                $"预计退回 {order.PaidAmount / 2:0.##}，扣费 {order.PaidAmount / 2:0.##}。",
+                policy.RuleCode, true, false, "CONFIRMATION_REQUIRED", "WAITING_USER_CONFIRM"),
+            "C" => Dec("ExplainProgress", RiskLevel.L1, 22, order.PaidAmount, 0,
+                "退款已发起，资金仍在渠道处理中", "继续等待原路退款",
+                "无需重复申请；超时未到账将自动创建支付调查。",
+                "REFUND_TRACKING", false, false, "TRACKING_REFUND", "AWAITING_PAYMENT"),
+            "D" => Dec("Recovery", RiskLevel.L3, 84, order.PaidAmount, 0,
+                "入住前无房/加价，先安排替代住宿", "转紧急履约恢复",
+                "额外费用需确认；已准备人工协同。",
+                "PREARRIVAL_RECOVERY", false, false, "ESCALATED", "RECOVERY_IN_PROGRESS"),
+            "E" => Dec("HumanHandoff", RiskLevel.L3, 92, order.PaidAmount, 0,
+                "到店无房，优先今晚住宿", "立即转紧急专员",
+                "退款与责任认定在安顿后继续。",
+                "ONSITE_URGENT", false, false, "ESCALATED", "RECOVERED"),
+            "F" when !signals.HasNegotiationReason && !signals.HasEvidence =>
+                Dec("RequestInformation", RiskLevel.L2, 55, 0, 0,
+                    "不可取消订单，需先补充无法入住原因", "补充信息后发起协商",
+                    "信息完整后生成酒店协商草案。",
+                    "NON_REFUNDABLE", false, true, "FACTS_REQUIRED", "WAITING_EVIDENCE"),
+            "F" => Dec("NegotiateWithHotel", RiskLevel.L2, 62, 0, 0,
+                "不能直接退款，可发起例外协商", "提交供应商协商",
+                "不承诺一定成功，结果以酒店回复为准。",
+                "SUPPLIER_NEGOTIATION", true, false, "CONFIRMATION_REQUIRED", "WAITING_SUPPLIER"),
+            "G" when !signals.HasEvidence =>
+                Dec("RequestEvidence", RiskLevel.L2, 58, 0, 0,
+                    "特殊原因需先上传证明", "补充航班/疾病等证明",
+                    "材料可触发审核，但不保证全额退款。",
+                    "SPECIAL_EXCEPTION", false, true, "FACTS_REQUIRED", "WAITING_EVIDENCE"),
+            "G" => Dec("SpecialReview", RiskLevel.L2, 64, 0, 0,
+                "材料已接收，进入特殊审核", "创建例外审核工单",
+                "审核完成前不自动全退。",
+                "SPECIAL_EXCEPTION_REVIEW", false, false, "ESCALATED", "MANUAL_REVIEW"),
+            "H" => Dec("ServiceDispute", RiskLevel.L3, 78, 0, 0,
+                "先处理当前入住问题，再核实赔付", "创建服务争议工单",
+                "审核完成前不承诺具体金额。",
+                "SERVICE_DISPUTE", false, false, "WAITING_EXTERNAL", "MANUAL_REVIEW"),
+            "I" => Dec("ChangeOrder", RiskLevel.L1, 30, 80, 0,
+                "可以改期，需补差价", "确认改期报价",
+                "改期补差 80，对比取消扣费 300。",
+                "ORDER_CHANGE", true, false, "CONFIRMATION_REQUIRED", "WAITING_USER_CONFIRM"),
+            "J" => Dec("FinanceReview", RiskLevel.L3, 76, 0, 0,
+                "区分实扣与预授权，转财务核验", "创建财务工单",
+                "预授权冻结不等于第二笔实扣。",
+                "PAYMENT_ANOMALY", false, false, "WAITING_EXTERNAL", "MANUAL_REVIEW"),
+            "K" => Dec("HumanHandoff", RiskLevel.L3, 80, 0, 0,
+                "跨境责任链需专席跟进", "转跨境专席",
+                "平台统一受理，执行方可能在海外供应商。",
+                "CROSS_BORDER", false, false, "ESCALATED", "AWAITING_SPECIALIST"),
+            "L" => Dec("HumanHandoff", RiskLevel.L3, 82, 3000, 300,
+                "团体部分取消仅可预览，禁止自动写入", "提交团体专席确认",
+                "写操作已阻断，待专席确认发票影响。",
+                "CORPORATE_GROUP", false, false, "ESCALATED", "AWAITING_SPECIALIST"),
+            _ => Dec("Clarify", RiskLevel.L1, 20, 0, 0, "暂无法判断", "澄清诉求", "请补充更多信息。",
+                "UNKNOWN", false, false, "INTENT_READY", "OPEN")
         };
     }
 
-    private static RuleDecision FreeCancel(HotelOrder order, PolicySnapshot policy) => new(
-        AgentAction.ConfirmCancel,
-        RiskLevel.L1,
-        18,
-        order.Amount,
-        0m,
-        "可以免费取消",
-        "免费取消并原路退款",
-        $"确认后立即取消订单，预计退回 ¥{order.Amount:0.##}，不收取消费。",
-        policy.Code,
-        NeedsUserConfirm: true,
-        NeedsEvidence: false);
-
-    private static RuleDecision Deducted(HotelOrder order)
-    {
-        var fee = Math.Round(order.Amount / 2m, 2);
-        var refund = order.Amount - fee;
-        return new(
-            AgentAction.ConfirmCancel,
-            RiskLevel.L1,
-            28,
-            refund,
-            fee,
-            "可以取消，但会扣除部分房费",
-            $"接受 ¥{fee:0.##} 取消费并退款",
-            $"确认后取消订单，扣除 ¥{fee:0.##}，预计退回 ¥{refund:0.##}。",
-            "POLICY-DEDUCT-HALF",
-            true,
-            false);
-    }
-
-    private static RuleDecision NonCancel(HotelOrder order, bool hasEvidence)
-    {
-        if (!hasEvidence)
-        {
-            return new(
-                AgentAction.RequestEvidence,
-                RiskLevel.L2,
-                55,
-                0m,
-                0m,
-                "订单为不可取消，需要补充特殊原因材料后才能协商",
-                "补充材料后发起例外协商",
-                "请先提供无法入住的证明材料，平台再代为向酒店协商。",
-                "POLICY-NON-REFUNDABLE",
-                false,
-                true);
-        }
-
-        return new(
-            AgentAction.NegotiateWithHotel,
-            RiskLevel.L2,
-            62,
-            0m,
-            0m,
-            "不能直接退款，可以替你发起酒店协商",
-            "申请例外退款协商",
-            "平台代你向酒店争取部分退款或改期，不承诺一定成功。",
-            "POLICY-EXCEPTION-NEGOTIATE",
-            true,
-            false);
-    }
-
-    private static RuleDecision Flight(HotelOrder order, bool hasEvidence)
-    {
-        if (!hasEvidence)
-        {
-            return new(
-                AgentAction.RequestEvidence,
-                RiskLevel.L2,
-                58,
-                0m,
-                0m,
-                "航班取消可作为特殊原因，但需先上传取消证明",
-                "补充航班取消证明",
-                "材料齐全后将进入酒店协商路径，审核通过前不承诺全额退款。",
-                "HTL-REFUND-006",
-                false,
-                true);
-        }
-
-        return new(
-            AgentAction.NegotiateWithHotel,
-            RiskLevel.L2,
-            64,
-            0m,
-            0m,
-            "材料已接收，将发起酒店协商工单",
-            "提交航班取消例外协商",
-            "已创建 P2 协商工单，预计下个工作日首次回复。",
-            "HTL-REFUND-006",
-            false,
-            false);
-    }
-
-    private static RuleDecision NoRoom(HotelOrder order) => new(
-        AgentAction.HumanHandoff,
-        RiskLevel.L3,
-        88,
-        order.Amount,
-        0m,
-        "到店无房属于高优先级履约异常，先安排今晚住宿",
-        "立即转紧急专员",
-        "优先恢复住宿，退款与责任认定在安顿后继续处理。",
-        "FULFILLMENT-NO-ROOM",
-        false,
-        false);
-
-    private static RuleDecision Progress(HotelOrder order) => new(
-        AgentAction.ExplainProgress,
-        RiskLevel.L1,
-        22,
-        order.Amount,
-        0m,
-        "退款已发起，资金仍在渠道处理中",
-        "继续等待原路退款",
-        "无需重复申请，超时未到账将自动创建支付调查。",
-        "REFUND-IN-FLIGHT",
-        false,
-        false);
-
-    private static RuleDecision Payment(HotelOrder order) => new(
-        AgentAction.HumanHandoff,
-        RiskLevel.L3,
-        76,
-        0m,
-        0m,
-        "检测到支付异常，需财务专席核验实扣与预授权",
-        "创建财务核验工单",
-        "核验完成前不重复退款，预计下一工作日给出结论。",
-        "PAYMENT-ANOMALY",
-        false,
-        false);
+    private static RuleDecision Dec(
+        string action, RiskLevel risk, int score, decimal refund, decimal fee,
+        string conclusion, string planTitle, string planCopy, string ruleCode,
+        bool confirm, bool evidence, string state, string caseStatus) =>
+        new(action, risk, score, refund, fee, conclusion, planTitle, planCopy, ruleCode, confirm, evidence, state, caseStatus);
 }

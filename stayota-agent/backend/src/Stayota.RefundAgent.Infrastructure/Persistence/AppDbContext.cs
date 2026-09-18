@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Stayota.RefundAgent.Domain;
 using Stayota.RefundAgent.Domain.Entities;
 
 namespace Stayota.RefundAgent.Infrastructure.Persistence;
@@ -20,13 +19,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         {
             e.ToTable("orders");
             e.HasKey(x => x.OrderId);
-            e.Property(x => x.Amount).HasPrecision(18, 2);
+            e.Property(x => x.PaidAmount).HasPrecision(18, 2);
         });
         modelBuilder.Entity<PolicySnapshot>(e =>
         {
             e.ToTable("policies");
             e.HasKey(x => x.PolicyId);
-            e.Property(x => x.DeductionAmount).HasPrecision(18, 2);
+            e.Property(x => x.FixedFee).HasPrecision(18, 2);
         });
         modelBuilder.Entity<RefundCase>(e =>
         {
@@ -34,7 +33,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             e.HasKey(x => x.CaseId);
             e.Property(x => x.QuoteRefundAmount).HasPrecision(18, 2);
             e.Property(x => x.QuoteFeeAmount).HasPrecision(18, 2);
-            e.HasMany(x => x.Events).WithOne().HasForeignKey(x => x.CaseId);
         });
         modelBuilder.Entity<CaseEvent>(e =>
         {
@@ -56,8 +54,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ScenarioFixture>(e =>
         {
             e.ToTable("scenarios");
-            e.HasKey(x => x.Id);
-            e.HasIndex(x => x.Code).IsUnique();
+            e.HasKey(x => x.ScenarioId);
         });
     }
 }

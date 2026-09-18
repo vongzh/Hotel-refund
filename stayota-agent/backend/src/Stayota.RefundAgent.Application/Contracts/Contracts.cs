@@ -5,35 +5,46 @@ namespace Stayota.RefundAgent.Application.Contracts;
 
 public sealed record AgentMessageRequest(
     string Message,
-    string? ScenarioCode = null,
+    string? ScenarioId = null,
     string? UserId = null,
     bool HasEvidence = false,
+    bool HasNegotiationReason = false,
+    bool LowConfidence = false,
+    bool ServiceError = false,
+    bool ConfirmWrite = false,
+    string? ConfirmationToken = null,
+    string? IdempotencyKey = null,
     bool ResetDemo = false);
 
-public sealed record DecisionStepDto(
-    string Step,
-    string Status,
-    string Detail,
-    double? Score = null);
+public sealed record DecisionStepDto(string Step, string Status, string Detail, double? Score = null);
+
+public sealed record PolicyMatchDto(string PolicyId, string Title, double Score, string Summary);
+
+public sealed record TicketDto(string TicketId, string Priority, string Queue, string Summary, IReadOnlyList<string> Facts);
 
 public sealed record AgentDecisionDto(
     string TraceId,
     string RunId,
     string CaseId,
-    string ScenarioCode,
+    string ScenarioId,
     string Intent,
     double IntentConfidence,
     RiskLevel RiskLevel,
     int RiskScore,
-    AgentAction Action,
+    string Action,
     string Conclusion,
     string PlanTitle,
     string PlanCopy,
     decimal? RefundAmount,
     decimal? FeeAmount,
     string Reply,
+    string ConversationState,
+    string CaseStatus,
     IReadOnlyList<DecisionStepDto> Steps,
     IReadOnlyDictionary<string, string> Slots,
+    IReadOnlyList<PolicyMatchDto> PolicyMatches,
+    IReadOnlyList<string> ToolSequence,
+    TicketDto? Ticket,
     HotelOrderDto Order);
 
 public sealed record HotelOrderDto(
@@ -42,30 +53,29 @@ public sealed record HotelOrderDto(
     DateOnly CheckIn,
     DateOnly CheckOut,
     decimal Amount,
+    string Currency,
     string Status,
-    bool Arrived,
-    string CancelPolicyCode,
-    int Version);
+    bool UserOnSite,
+    string PolicyId,
+    int Version,
+    string RoomType,
+    int RoomCount);
 
 public sealed record ScenarioDto(
-    string Code,
-    string Name,
+    string ScenarioId,
+    string Title,
     string Group,
     string Goal,
     string EntryMessage,
-    RiskLevel RiskLevel);
+    RiskLevel RiskLevel,
+    string ExpectedRoute,
+    IReadOnlyList<string> RequiredTools);
 
-public sealed record ConfirmActionRequest(
-    string CaseId,
-    string OrderId,
-    int OrderVersion,
-    string Action,
-    string IdempotencyKey);
+public sealed record EvalCaseDto(string Id, string Message, string ExpectedScenario, string RiskLevel);
+public sealed record EvalResultDto(string Id, string Message, string ExpectedScenario, string ActualScenario, bool Passed, string? Detail);
 
-public sealed record ConfirmActionResponse(
-    bool Success,
-    string Message,
-    string? ConfirmationToken = null);
+public sealed record ConfirmActionRequest(string CaseId, string OrderId, int OrderVersion, string Action, string IdempotencyKey);
+public sealed record ConfirmActionResponse(bool Success, string Message, string? ConfirmationToken = null);
 
 public interface IAgentOrchestrator
 {
@@ -75,16 +85,34 @@ public interface IAgentOrchestrator
 public interface IScenarioCatalog
 {
     IReadOnlyList<ScenarioDto> List();
-    ScenarioFixture GetRequired(string code);
+    ScenarioFixture GetRequired(string scenarioId);
+}
+
+public interface IEvalRunner
+{
+    Task<IReadOnlyList<EvalResultDto>> RunAllAsync(CancellationToken ct = default);
+    IReadOnlyList<EvalCaseDto> ListCases();
+}
+
+public interface IIntentService
+{
+    (string Intent, string Reason, double Confidence, Dictionary<string, string> Slots) Analyze(string message, ScenarioFixture scenario, bool lowConfidence);
+}
+
+public interface IPolicyRetrieval
+{
+    IReadOnlyList<PolicyMatchDto> Retrieve(HotelOrder order, PolicySnapshot policy, string reason);
 }
 
 public interface IRulesEngine
 {
-    RuleDecision Evaluate(HotelOrder order, PolicySnapshot policy, ScenarioId scenario, bool hasEvidence);
+    RuleDecision Evaluate(HotelOrder order, PolicySnapshot policy, ScenarioFixture scenario, AgentSignals signals);
 }
 
+public sealed record AgentSignals(bool HasEvidence, bool HasNegotiationReason, bool LowConfidence, bool ServiceError, bool ConfirmWrite);
+
 public sealed record RuleDecision(
-    AgentAction Action,
+    string Action,
     RiskLevel RiskLevel,
     int RiskScore,
     decimal RefundAmount,
@@ -94,12 +122,17 @@ public sealed record RuleDecision(
     string PlanCopy,
     string RuleCode,
     bool NeedsUserConfirm,
-    bool NeedsEvidence);
+    bool NeedsEvidence,
+    string ConversationState,
+    string CaseStatus);
 
 public interface IToolGateway
 {
     Task<ToolResult> InvokeAsync(ToolCall call, CancellationToken ct = default);
+    IReadOnlyList<ToolContractDto> ListContracts();
 }
+
+public sealed record ToolContractDto(string Name, string Mode, string Purpose);
 
 public sealed record ToolCall(
     string TraceId,
@@ -109,17 +142,13 @@ public sealed record ToolCall(
     string? OrderId,
     string? CaseId,
     RiskLevel RiskLevel,
+    string ConversationState,
     IDictionary<string, object?> Arguments,
     string? ConfirmationToken = null,
     string? IdempotencyKey = null,
     int? ExpectedOrderVersion = null);
 
-public sealed record ToolResult(
-    bool Allowed,
-    bool Success,
-    string ToolName,
-    object? Data,
-    string? DenyReason = null);
+public sealed record ToolResult(bool Allowed, bool Success, string ToolName, object? Data, string? DenyReason = null);
 
 public interface IConfirmationStore
 {
