@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Stayota.RefundAgent.Application.Ai;
 using Stayota.RefundAgent.Application.Contracts;
 using Stayota.RefundAgent.Domain;
 using Stayota.RefundAgent.Domain.Entities;
@@ -11,7 +12,8 @@ public sealed class AgentOrchestrator(
     IIntentService intentService,
     IPolicyRetrieval retrieval,
     IRulesEngine rules,
-    IToolGateway tools,
+    IRefundAiToolCatalog tools,
+    IRefundAgentHost agentHost,
     IConfirmationStore confirmationStore,
     ISessionStore sessionStore,
     IVerifier verifier,
@@ -207,7 +209,9 @@ public sealed class AgentOrchestrator(
         await store.SaveWorkflowRunAsync(run, ct);
         await sessionStore.SetAsync($"session:{userId}:{order.OrderId}", JsonSerializer.Serialize(new { scenario.CaseId, runId, confirmationToken }), TimeSpan.FromHours(6), ct);
 
-        logger.LogInformation("Scenario {Scenario} action {Action}", scenario.ScenarioId, decision.Action);
+        logger.LogInformation(
+            "Scenario {Scenario} action {Action} aiProvider={Provider} agent={Agent}",
+            scenario.ScenarioId, decision.Action, agentHost.ProviderName, agentHost.Agent.Name);
 
         var dto = new AgentDecisionDto(
             traceId, runId, scenario.CaseId, scenario.ScenarioId,

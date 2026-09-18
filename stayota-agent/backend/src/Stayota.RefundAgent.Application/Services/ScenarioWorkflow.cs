@@ -1,14 +1,21 @@
 using System.Text.Json;
+using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.Logging;
+using Stayota.RefundAgent.Application.Ai;
 using Stayota.RefundAgent.Application.Contracts;
 using Stayota.RefundAgent.Domain;
 using Stayota.RefundAgent.Domain.Entities;
 
 namespace Stayota.RefundAgent.Application.Services;
 
+/// <summary>
+/// A–L scenario runner built on Microsoft Agent Framework <see cref="WorkflowBuilder"/> /
+/// <see cref="InProcessExecution"/> instead of a hand-rolled FSM loop.
+/// Tool gates remain in <see cref="IToolGateway"/> via <see cref="IRefundAiToolCatalog"/>.
+/// </summary>
 public sealed class ScenarioWorkflow(
     IRefundDataStore store,
-    IToolGateway tools,
+    IRefundAiToolCatalog tools,
     IConfirmationStore confirmationStore,
     IVerifier verifier,
     ILogger<ScenarioWorkflow> logger) : IScenarioWorkflow
@@ -68,54 +75,23 @@ public sealed class ScenarioWorkflow(
             if (idx >= 0) requiredTools.Insert(idx + 1, "submit_evidence_metadata");
         }
 
-        var runId = $"run_{Guid.NewGuid():N}"[..16];
-        var traceId = $"trc_{Guid.NewGuid():N}"[..16];
-        var state = "START";
-        var steps = new List<WorkflowStepDto>();
-        var toolCalls = new List<string>();
-        var facts = new Dictionary<string, object?>();
-
-        state = Record(steps, "INTENT_AND_ROUTE", "RULE_ENGINE", state, "INTENT_READY", null,
-            new { scenario.EntryMessage, route = scenario.ExpectedRoute, scenario.RiskLevel });
-
-        var risk = scenario.RiskLevel;
-        for (var occurrence = 0; occurrence < requiredTools.Count; occurrence++)
+        var bag = new ScenarioRunBag
         {
-            var toolName = requiredTools[occurrence];
-            var desired = StateFor(scenarioId, toolName);
-            if (state != desired)
-                state = Record(steps, "WORKFLOW_ROUTE", "STATE_MACHINE", state, desired, null, new { next_tool = toolName });
+            RunId = $"run_{Guid.NewGuid():N}"[..16],
+            TraceId = $"trc_{Guid.NewGuid():N}"[..16],
+            ScenarioId = scenarioId,
+            Scenario = scenario,
+            Order = order,
+            RequiredTools = requiredTools,
+            State = "START",
+            Risk = scenario.RiskLevel
+        };
 
-            var args = BuildArgs(toolName, scenarioId, scenario, order, facts, traceId, occurrence);
-            string? token = null;
-            if (ConfirmTools.Contains(toolName))
-            {
-                token = await confirmationStore.IssueAsync(
-                    scenario.CaseId, order.OrderId, order.Version, toolName, TimeSpan.FromMinutes(10), ct);
-                args["confirmation_token"] = token;
-            }
+        var workflow = BuildAgentFrameworkWorkflow(bag, requiredTools);
+        await using var run = await InProcessExecution.RunAsync(workflow, bag, cancellationToken: ct);
+        _ = run.OutgoingEvents.OfType<WorkflowOutputEvent>().LastOrDefault()?.Data as ScenarioRunBag ?? bag;
 
-            var access = toolName.StartsWith("submit_") || toolName.StartsWith("create_") ||
-                         toolName.StartsWith("accept_") || toolName.StartsWith("reserve_") ||
-                         toolName.StartsWith("confirm_") || toolName.StartsWith("schedule_")
-                ? ToolAccess.Write : ToolAccess.Read;
-
-            var result = await tools.InvokeAsync(new ToolCall(
-                traceId, toolName, access, scenario.UserId, order.OrderId, scenario.CaseId, risk,
-                state, args, token, Convert.ToString(args.GetValueOrDefault("idempotency_key")),
-                order.Version), ct);
-
-            if (!result.Allowed || !result.Success)
-                throw new InvalidOperationException($"{toolName} failed: {result.DenyReason}");
-
-            facts[toolName] = result.Data;
-            toolCalls.Add(toolName);
-            var after = NextStateAfter(toolName, state);
-            Record(steps, "TOOL_EXECUTION", "TOOL", state, after, toolName, result.Data);
-            state = after;
-        }
-
-        var caseStatus = MapFinalCaseStatus(scenarioId, state, scenario.ExpectedCaseStatus);
+        var caseStatus = MapFinalCaseStatus(scenarioId, bag.State, scenario.ExpectedCaseStatus);
         await store.UpsertCaseAsync(new RefundCase
         {
             CaseId = scenario.CaseId,
@@ -123,40 +99,112 @@ public sealed class ScenarioWorkflow(
             UserId = scenario.UserId,
             ScenarioId = scenarioId,
             Status = caseStatus,
-            RiskLevel = risk,
+            RiskLevel = bag.Risk,
             Intent = scenario.Title,
             RecommendedAction = scenario.ExpectedRoute,
-            ConversationState = state,
+            ConversationState = bag.State,
             UpdatedAt = DateTimeOffset.UtcNow
         }, ct);
 
         var expectedOriginal = JsonSerializer.Deserialize<List<string>>(scenario.RequiredToolsJson) ?? [];
         var draft = new WorkflowRunResultDto(
-            runId, scenarioId, scenario.ExpectedRoute, scenario.CaseId, state, caseStatus,
-            toolCalls, steps, new WorkflowAssertionDto(false, false, false, false), false);
+            bag.RunId, scenarioId, scenario.ExpectedRoute, scenario.CaseId, bag.State, caseStatus,
+            bag.ToolCalls, bag.Steps, new WorkflowAssertionDto(false, false, false, false), false);
         var verification = verifier.VerifyWorkflow(draft, expectedOriginal, scenario.ExpectedCaseStatus);
         var assertions = new WorkflowAssertionDto(
-            IsSubsequence(expectedOriginal, toolCalls),
+            IsSubsequence(expectedOriginal, bag.ToolCalls),
             Verifier.StatusCompatible(caseStatus, scenario.ExpectedCaseStatus),
-            toolCalls.All(t => expectedOriginal.Contains(t) || (scenarioId == "H" && t == "submit_evidence_metadata")),
+            bag.ToolCalls.All(t => expectedOriginal.Contains(t) || (scenarioId == "H" && t == "submit_evidence_metadata")),
             verification.Passed);
         var succeeded = assertions.RequiredToolsCalledInOrder && assertions.NoUnexpectedTool && assertions.ExpectedCaseStatusReached;
 
         await store.SaveWorkflowRunAsync(new WorkflowRun
         {
-            RunId = runId,
+            RunId = bag.RunId,
             CaseId = scenario.CaseId,
             ScenarioId = scenarioId,
             Status = succeeded ? "SUCCEEDED" : "ASSERTION_FAILED",
-            TraceJson = JsonSerializer.Serialize(steps),
-            ToolSequenceJson = JsonSerializer.Serialize(toolCalls),
+            TraceJson = JsonSerializer.Serialize(bag.Steps),
+            ToolSequenceJson = JsonSerializer.Serialize(bag.ToolCalls),
             StartedAt = DateTimeOffset.UtcNow,
             CompletedAt = DateTimeOffset.UtcNow
         }, ct);
 
-        logger.LogInformation("Workflow {Scenario} succeeded={Succeeded} tools={Count}", scenarioId, succeeded, toolCalls.Count);
-        return new WorkflowRunResultDto(runId, scenarioId, scenario.ExpectedRoute, scenario.CaseId, state, caseStatus,
-            toolCalls, steps, assertions, succeeded);
+        logger.LogInformation(
+            "AF Workflow {Scenario} succeeded={Succeeded} tools={Count} engine=Microsoft.Agents.AI.Workflows",
+            scenarioId, succeeded, bag.ToolCalls.Count);
+        return new WorkflowRunResultDto(bag.RunId, scenarioId, scenario.ExpectedRoute, scenario.CaseId, bag.State, caseStatus,
+            bag.ToolCalls, bag.Steps, assertions, succeeded);
+    }
+
+    private Workflow BuildAgentFrameworkWorkflow(ScenarioRunBag bag, IReadOnlyList<string> requiredTools)
+    {
+        var intent = new FunctionExecutor<ScenarioRunBag, ScenarioRunBag>("intent_and_route", (s, _, _) =>
+        {
+            s.State = Record(s.Steps, "INTENT_AND_ROUTE", "RULE_ENGINE", s.State, "INTENT_READY", null,
+                new { s.Scenario.EntryMessage, route = s.Scenario.ExpectedRoute, s.Scenario.RiskLevel });
+            return ValueTask.FromResult(s);
+        });
+
+        var builder = new WorkflowBuilder(intent);
+        ExecutorBinding previous = intent;
+
+        for (var i = 0; i < requiredTools.Count; i++)
+        {
+            var occurrence = i;
+            var toolName = requiredTools[i];
+            var nodeId = $"tool_{occurrence}_{toolName}";
+            var exec = new FunctionExecutor<ScenarioRunBag, ScenarioRunBag>(nodeId, async (s, _, ct) =>
+            {
+                await ExecuteToolStepAsync(s, toolName, occurrence, ct).ConfigureAwait(false);
+                return s;
+            });
+            builder.AddEdge(previous, exec);
+            previous = exec;
+        }
+
+        var finalize = new FunctionExecutor<ScenarioRunBag, ScenarioRunBag>("finalize", async (s, ctx, ct) =>
+        {
+            await ctx.YieldOutputAsync(s, ct).ConfigureAwait(false);
+            return s;
+        });
+        builder.AddEdge(previous, finalize).WithOutputFrom(finalize).WithName($"scenario-{bag.ScenarioId}");
+        return builder.Build();
+    }
+
+    private async Task ExecuteToolStepAsync(ScenarioRunBag s, string toolName, int occurrence, CancellationToken ct)
+    {
+        var desired = StateFor(s.ScenarioId, toolName);
+        if (s.State != desired)
+            s.State = Record(s.Steps, "WORKFLOW_ROUTE", "AGENT_FRAMEWORK", s.State, desired, null, new { next_tool = toolName });
+
+        var args = BuildArgs(toolName, s.ScenarioId, s.Scenario, s.Order, s.Facts, s.TraceId, occurrence);
+        string? token = null;
+        if (ConfirmTools.Contains(toolName))
+        {
+            token = await confirmationStore.IssueAsync(
+                s.Scenario.CaseId, s.Order.OrderId, s.Order.Version, toolName, TimeSpan.FromMinutes(10), ct);
+            args["confirmation_token"] = token;
+        }
+
+        var access = toolName.StartsWith("submit_") || toolName.StartsWith("create_") ||
+                     toolName.StartsWith("accept_") || toolName.StartsWith("reserve_") ||
+                     toolName.StartsWith("confirm_") || toolName.StartsWith("schedule_")
+            ? ToolAccess.Write : ToolAccess.Read;
+
+        var result = await tools.InvokeAsync(new ToolCall(
+            s.TraceId, toolName, access, s.Scenario.UserId, s.Order.OrderId, s.Scenario.CaseId, s.Risk,
+            s.State, args, token, Convert.ToString(args.GetValueOrDefault("idempotency_key")),
+            s.Order.Version), ct);
+
+        if (!result.Allowed || !result.Success)
+            throw new InvalidOperationException($"{toolName} failed: {result.DenyReason}");
+
+        s.Facts[toolName] = result.Data;
+        s.ToolCalls.Add(toolName);
+        var after = NextStateAfter(toolName, s.State);
+        Record(s.Steps, "TOOL_EXECUTION", "AIFunction/ToolGateway", s.State, after, toolName, result.Data);
+        s.State = after;
     }
 
     private static string StateFor(string scenarioId, string toolName)
@@ -169,7 +217,7 @@ public sealed class ScenarioWorkflow(
             [("E", "create_human_handoff")] = "OPTION_PRESENTED",
             [("L", "create_human_handoff")] = "OPTION_PRESENTED",
         };
-        return overrides.TryGetValue((scenarioId, toolName), out var s) ? s : ToolStates[toolName];
+        return overrides.TryGetValue((scenarioId, toolName), out var st) ? st : ToolStates[toolName];
     }
 
     private static string NextStateAfter(string toolName, string current) => toolName switch
@@ -199,7 +247,6 @@ public sealed class ScenarioWorkflow(
         var caseId = scenario.CaseId;
         var idem = $"idem-{scenarioId}-{name}-{occurrence}";
 
-        // Prefer serialized roundtrip for anonymous objects
         string? FactStr(string tool, string field)
         {
             if (!facts.TryGetValue(tool, out var data) || data is null) return null;
@@ -275,5 +322,20 @@ public sealed class ScenarioWorkflow(
         foreach (var item in actual)
             if (i < expected.Count && item == expected[i]) i++;
         return i == expected.Count;
+    }
+
+    private sealed class ScenarioRunBag
+    {
+        public required string RunId { get; init; }
+        public required string TraceId { get; init; }
+        public required string ScenarioId { get; init; }
+        public required ScenarioFixture Scenario { get; init; }
+        public required HotelOrder Order { get; init; }
+        public required List<string> RequiredTools { get; init; }
+        public required RiskLevel Risk { get; init; }
+        public string State { get; set; } = "START";
+        public List<WorkflowStepDto> Steps { get; } = [];
+        public List<string> ToolCalls { get; } = [];
+        public Dictionary<string, object?> Facts { get; } = new();
     }
 }

@@ -35,7 +35,11 @@ app.UseSwagger();
 app.UseSwaggerUI();
 app.UseCors();
 app.MapControllers();
-app.MapGet("/health", async (AppDbContext db, IToolGateway tools) =>
+app.MapGet("/health", async (
+    AppDbContext db,
+    IToolGateway tools,
+    Stayota.RefundAgent.Application.Ai.IRefundAiToolCatalog aiTools,
+    Stayota.RefundAgent.Application.Ai.IRefundAgentHost agentHost) =>
 {
     var scenarios = await db.Scenarios.CountAsync();
     return Results.Ok(new
@@ -43,6 +47,15 @@ app.MapGet("/health", async (AppDbContext db, IToolGateway tools) =>
         status = "ok",
         scenarios,
         tools = tools.ListContracts().Count,
+        aiFunctions = aiTools.Functions.Count,
+        aiProvider = agentHost.ProviderName,
+        agent = agentHost.Agent.Name,
+        stack = new
+        {
+            meai = "Microsoft.Extensions.AI",
+            agentFramework = "Microsoft.Agents.AI",
+            workflows = "Microsoft.Agents.AI.Workflows"
+        },
         database = "postgresql",
         cache = "redis",
         agentRoot = Environment.GetEnvironmentVariable("STAYOTA_AGENT_ROOT")

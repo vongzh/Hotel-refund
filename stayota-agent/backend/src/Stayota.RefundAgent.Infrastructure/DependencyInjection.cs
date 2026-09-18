@@ -1,11 +1,13 @@
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
+using Stayota.RefundAgent.Application.Ai;
 using Stayota.RefundAgent.Application.Contracts;
 using Stayota.RefundAgent.Application.Services;
 using Stayota.RefundAgent.Infrastructure.Persistence;
 using Stayota.RefundAgent.Infrastructure.Redis;
+using Microsoft.EntityFrameworkCore;
 
 namespace Stayota.RefundAgent.Infrastructure;
 
@@ -26,6 +28,12 @@ public static class DependencyInjection
         services.AddSingleton<IPolicyRetrieval, PolicyRetrieval>();
         services.AddScoped<IRulesEngine, RulesEngine>();
         services.AddScoped<IToolGateway, ToolGateway>();
+        services.AddScoped<IRefundAiToolCatalog, RefundAiToolCatalog>();
+
+        // Microsoft.Extensions.AI — swap DeterministicRefundChatClient for Azure OpenAI / Foundry later.
+        services.AddSingleton<IChatClient, DeterministicRefundChatClient>();
+        services.AddScoped<IRefundAgentHost, RefundAgentHost>();
+
         services.AddScoped<IAgentOrchestrator, AgentOrchestrator>();
         services.AddScoped<IScenarioWorkflow, ScenarioWorkflow>();
         services.AddSingleton<IVerifier, Verifier>();
