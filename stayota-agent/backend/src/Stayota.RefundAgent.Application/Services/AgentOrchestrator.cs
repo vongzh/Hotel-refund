@@ -174,7 +174,17 @@ public sealed class AgentOrchestrator(
                     $"政策 {policy.PolicyId}",
                     $"结论 {decision.Conclusion}",
                     $"风险 {decision.RiskLevel}/{decision.RiskScore}"
-                ]);
+                ],
+                BuildTicketLifecycle(decision.Action, decision.RiskLevel, decision.CaseStatus));
+        }
+
+        HitlStateDto? hitl = null;
+        if (decision.NeedsUserConfirm)
+        {
+            hitl = new HitlStateDto(
+                true,
+                scenario.ScenarioId == "I" ? "submit_order_change" : "submit_cancellation",
+                confirmationToken);
         }
 
         var refundCase = new RefundCase
@@ -223,9 +233,23 @@ public sealed class AgentOrchestrator(
             steps, analyzed.Slots, matches, executed.Distinct().ToList(), ticket,
             new HotelOrderDto(order.OrderId, order.HotelName, order.CheckIn, order.CheckOut, order.PaidAmount, order.Currency,
                 order.Status, order.UserOnSite, order.PolicyId, order.Version, order.RoomType, order.RoomCount),
-            false, Array.Empty<string>());
+            false, Array.Empty<string>(), hitl, agentHost.ProviderName);
         var verification = verifier.VerifyDecision(dto);
         return dto with { VerificationPassed = verification.Passed, VerificationViolations = verification.Violations };
+    }
+
+    private static IReadOnlyList<TicketLifecycleStepDto> BuildTicketLifecycle(string action, RiskLevel risk, string caseStatus)
+    {
+        var queue = risk == RiskLevel.L3 ? "紧急专席" : "专项队列";
+        return
+        [
+            new("受理建单", "done", $"已创建 {queue} 工单上下文"),
+            new("事实汇总", "done", "订单 / 政策 / 风险已写入工单摘要"),
+            new("专席认领", caseStatus is "ESCALATED" or "WAITING_EXTERNAL" or "SPECIAL_REVIEW" ? "active" : "pending",
+                action is "NegotiateWithHotel" ? "等待供应商回执" : "等待专员接手"),
+            new("用户可见更新", "pending", "公开进度文案待专席确认后同步"),
+            new("结案回写", "pending", "恢复会话与审计 Trace 待闭环")
+        ];
     }
 
     private static readonly Dictionary<string, string> ToolStates = new()

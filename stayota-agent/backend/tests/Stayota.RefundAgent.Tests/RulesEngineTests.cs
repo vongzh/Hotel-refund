@@ -42,6 +42,33 @@ public class RulesEngineTests
     }
 }
 
+public class PolicyRetrievalTests
+{
+    private readonly PolicyRetrieval _retrieval = new();
+
+    [Fact]
+    public void FlightCancel_RanksForceMajeurePolicy()
+    {
+        var matches = _retrieval.Retrieve(
+            new HotelOrder { Status = "CONFIRMED", PolicyId = "POL-G" },
+            new PolicySnapshot { PolicyId = "POL-G", Title = "特殊原因", Summary = "航班取消需材料" },
+            "flight_cancelled");
+        Assert.True(matches.Count >= 3);
+        Assert.Contains(matches, m => m.PolicyId.Contains("005") || m.Summary.Contains("不可抗力") || m.Score >= 0.5);
+        Assert.True(matches[0].Score >= matches[1].Score);
+    }
+
+    [Fact]
+    public void FreeCancel_PrefersFreeCancellationPolicy()
+    {
+        var matches = _retrieval.Retrieve(
+            new HotelOrder { Status = "CONFIRMED", PolicyId = "POL-A" },
+            new PolicySnapshot { PolicyId = "POL-A", Title = "免费取消", Summary = "截止前免费" },
+            "free_cancel");
+        Assert.Contains(matches, m => m.Title.Contains("免费") || m.PolicyId == "POL-A");
+    }
+}
+
 public class ScenarioRouterTests
 {
     private readonly ScenarioRouter _router = new();

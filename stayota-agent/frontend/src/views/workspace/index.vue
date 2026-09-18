@@ -120,6 +120,16 @@
               Verifier {{ decision.verificationPassed ? '通过' : '未通过' }}
             </span>
           </div>
+          <div v-if="decision.hitl?.requiresConfirmation" class="hitl-banner">
+            <div>
+              <strong>HITL 写门禁待确认</strong>
+              <p>
+                动作 <code>{{ decision.hitl.pendingAction }}</code>
+                · {{ decision.hitl.gate }}
+              </p>
+            </div>
+            <span class="status-pill warning">ApprovalRequired</span>
+          </div>
           <div class="action-ctas">
             <button
               v-if="decision.action === 'RequestEvidence'"
@@ -134,12 +144,13 @@
               @click="withReason"
             >补充无法入住原因</button>
             <button
-              v-if="decision.action === 'ConfirmCancel' || decision.action === 'ChangeOrder'"
+              v-if="decision.action === 'ConfirmCancel' || decision.action === 'ChangeOrder' || decision.hitl?.requiresConfirmation"
               class="primary-btn"
               :disabled="loading"
               @click="confirmWrite"
             >确认执行写操作</button>
             <span class="status-pill info">{{ decision.conversationState }}</span>
+            <span v-if="decision.aiProvider" class="status-pill neutral">AI · {{ decision.aiProvider }}</span>
           </div>
         </div>
 
@@ -238,11 +249,30 @@
               <ul>
                 <li v-for="f in decision.ticket.facts" :key="f">{{ f }}</li>
               </ul>
+              <div v-if="decision.ticket.lifecycle?.length" class="lifecycle">
+                <div
+                  v-for="step in decision.ticket.lifecycle"
+                  :key="step.stage"
+                  class="lifecycle-step"
+                  :data-status="step.status"
+                >
+                  <span class="dot" />
+                  <div>
+                    <strong>{{ step.stage }}</strong>
+                    <p>{{ step.detail }}</p>
+                  </div>
+                  <em>{{ step.status }}</em>
+                </div>
+              </div>
             </details>
           </template>
+          <div v-else-if="loading" class="skeleton-decision" aria-busy="true">
+            <div class="sk-row" /><div class="sk-row" /><div class="sk-row short" />
+            <p>决策面板加载中…</p>
+          </div>
           <div v-else class="empty-decision">
             <strong>决策面板待机</strong>
-            <p>跑通场景后，这里会展示风险分层、轨迹、政策分数条与 Tool 调用序。</p>
+            <p>跑通场景后，这里会展示风险分层、轨迹、政策分数条、Tool 调用序与工单生命周期。</p>
           </div>
         </div>
       </aside>
@@ -694,6 +724,44 @@ function actionLabel(action: string) {
   color: var(--color-ink-muted);
 }
 .empty-decision strong { display: block; color: var(--color-ink); margin-bottom: 0.35rem; }
+.hitl-banner {
+  display: flex; justify-content: space-between; gap: 0.75rem; align-items: center;
+  margin-bottom: 0.65rem; padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  border: 1px solid oklch(0.83 0.065 82);
+}
+.hitl-banner strong { display: block; font-size: var(--font-sm); }
+.hitl-banner p { margin: 0.2rem 0 0; font-size: 11px; color: var(--color-ink-muted); }
+.hitl-banner code { font-size: 11px; }
+.lifecycle { display: grid; gap: 0.55rem; margin-top: 0.7rem; }
+.lifecycle-step {
+  display: grid; grid-template-columns: 14px 1fr auto; gap: 0.55rem; align-items: start;
+  padding: 0.45rem 0.5rem; border-radius: var(--radius-md);
+  background: var(--color-surface-muted); border: 1px solid var(--color-border);
+}
+.lifecycle-step .dot {
+  width: 10px; height: 10px; margin-top: 4px; border-radius: 999px;
+  background: var(--color-border-strong);
+}
+.lifecycle-step[data-status="done"] .dot { background: var(--color-success); }
+.lifecycle-step[data-status="active"] .dot { background: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-soft); }
+.lifecycle-step strong { display: block; font-size: 12px; }
+.lifecycle-step p { margin: 0.15rem 0 0; color: var(--color-ink-muted); font-size: 11px; }
+.lifecycle-step em { font-style: normal; font-size: 10px; color: var(--color-ink-muted); text-transform: uppercase; }
+.skeleton-decision { padding: 1rem 0.25rem; }
+.skeleton-decision .sk-row {
+  height: 14px; border-radius: 6px; margin-bottom: 0.65rem;
+  background: linear-gradient(90deg, var(--color-surface-muted), var(--color-surface-strong), var(--color-surface-muted));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+.skeleton-decision .sk-row.short { width: 55%; }
+.skeleton-decision p { margin: 0.5rem 0 0; color: var(--color-ink-muted); font-size: 12px; }
+@keyframes shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
 
 .mobile-switch { display: none; gap: 0.35rem; margin-bottom: 0.75rem; }
 .mobile-switch button {

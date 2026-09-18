@@ -23,12 +23,26 @@ export interface PolicyMatch {
   summary: string
 }
 
+export interface TicketLifecycleStep {
+  stage: string
+  status: string
+  detail: string
+}
+
 export interface Ticket {
   ticketId: string
   priority: string
   queue: string
   summary: string
   facts: string[]
+  lifecycle?: TicketLifecycleStep[]
+}
+
+export interface HitlState {
+  requiresConfirmation: boolean
+  pendingAction?: string
+  confirmationToken?: string
+  gate?: string
 }
 
 export interface AgentDecision {
@@ -70,6 +84,8 @@ export interface AgentDecision {
   }
   verificationPassed: boolean
   verificationViolations: string[]
+  hitl?: HitlState
+  aiProvider?: string
 }
 
 export interface ToolContract {

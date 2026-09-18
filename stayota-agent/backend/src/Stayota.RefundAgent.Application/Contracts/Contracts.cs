@@ -20,7 +20,21 @@ public sealed record DecisionStepDto(string Step, string Status, string Detail, 
 
 public sealed record PolicyMatchDto(string PolicyId, string Title, double Score, string Summary);
 
-public sealed record TicketDto(string TicketId, string Priority, string Queue, string Summary, IReadOnlyList<string> Facts);
+public sealed record TicketLifecycleStepDto(string Stage, string Status, string Detail);
+
+public sealed record TicketDto(
+    string TicketId,
+    string Priority,
+    string Queue,
+    string Summary,
+    IReadOnlyList<string> Facts,
+    IReadOnlyList<TicketLifecycleStepDto> Lifecycle);
+
+public sealed record HitlStateDto(
+    bool RequiresConfirmation,
+    string? PendingAction,
+    string? ConfirmationToken,
+    string Gate = "confirmation_token + expected_order_version + idempotency_key");
 
 public sealed record AgentDecisionDto(
     string TraceId,
@@ -47,7 +61,9 @@ public sealed record AgentDecisionDto(
     TicketDto? Ticket,
     HotelOrderDto Order,
     bool VerificationPassed,
-    IReadOnlyList<string> VerificationViolations);
+    IReadOnlyList<string> VerificationViolations,
+    HitlStateDto? Hitl = null,
+    string? AiProvider = null);
 
 public sealed record HotelOrderDto(
     string OrderId,

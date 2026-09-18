@@ -13,7 +13,7 @@ public sealed class DeterministicRefundChatClient : IChatClient
     public static AsyncLocal<IReadOnlyList<string>?> PlannedTools { get; } = new();
     public static AsyncLocal<string?> FinalReply { get; } = new();
 
-    public ChatClientMetadata Metadata { get; } = new("stayota-deterministic", new Uri("local://stayota-refund-agent"));
+    public ChatClientMetadata Metadata { get; } = new("deterministic", new Uri("local://stayota-refund-agent"));
 
     public void Dispose()
     {

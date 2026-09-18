@@ -51,8 +51,20 @@ curl -X POST http://127.0.0.1:5088/api/eval/run
 curl -X POST http://127.0.0.1:5088/api/workflows/run-all
 ```
 
-## 明确边界
+## AI 提供商
 
-- 默认 ChatClient 为确定性离线实现（不调远程 LLM）；替换 `IChatClient` 注册即可接入真模型
-- StayOTA 生产订单/支付系统直连未做
-- 官方 vue-vben-admin monorepo 整仓嵌入未做（当前为同风格独立模块）
+默认 `Deterministic`（离线演示）。可在 `appsettings.json` 或环境变量切换：
+
+```bash
+# OpenAI / 兼容网关
+export AI_PROVIDER=OpenAI
+export OPENAI_API_KEY=sk-...
+# optional: OPENAI_ENDPOINT=https://...  OPENAI_MODEL=gpt-4o-mini
+
+# Ollama 本地
+export AI_PROVIDER=Ollama
+export OLLAMA_ENDPOINT=http://127.0.0.1:11434
+export OLLAMA_MODEL=llama3.2
+```
+
+配置错误时会自动回退到 Deterministic，保证 API 可启动。

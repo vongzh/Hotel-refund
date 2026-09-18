@@ -39,7 +39,9 @@ app.MapGet("/health", async (
     AppDbContext db,
     IToolGateway tools,
     Stayota.RefundAgent.Application.Ai.IRefundAiToolCatalog aiTools,
-    Stayota.RefundAgent.Application.Ai.IRefundAgentHost agentHost) =>
+    Stayota.RefundAgent.Application.Ai.IRefundAgentHost agentHost,
+    Stayota.RefundAgent.Infrastructure.Ai.IChatClientFactory chatClientFactory,
+    Microsoft.Extensions.Options.IOptions<Stayota.RefundAgent.Application.Ai.AiOptions> aiOptions) =>
 {
     var scenarios = await db.Scenarios.CountAsync();
     return Results.Ok(new
@@ -49,12 +51,16 @@ app.MapGet("/health", async (
         tools = tools.ListContracts().Count,
         aiFunctions = aiTools.Functions.Count,
         aiProvider = agentHost.ProviderName,
+        aiConfiguredProvider = aiOptions.Value.Provider,
+        aiResolvedProvider = chatClientFactory.ProviderName,
         agent = agentHost.Agent.Name,
         stack = new
         {
             meai = "Microsoft.Extensions.AI",
             agentFramework = "Microsoft.Agents.AI",
-            workflows = "Microsoft.Agents.AI.Workflows"
+            workflows = "Microsoft.Agents.AI.Workflows",
+            openAi = "Microsoft.Extensions.AI.OpenAI",
+            ollama = "OllamaSharp"
         },
         database = "postgresql",
         cache = "redis",
