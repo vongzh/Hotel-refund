@@ -23,7 +23,7 @@
 - 可单独扩缩、单独发版、故障隔离
 - 主站前端重做时，只换调用面，不必绑死进程内引用
 
-**可选过渡：** 早期用 `AddRefundAgentInfrastructure()` 挂进同一 Host（同仓联调）；接口与配置仍按「服务边界」设计，方便以后拆进程。
+**可选过渡：** 早期用 `AddStayOtaAgent()` + `AddRefundPlugin()` 挂进同一 Host（同仓联调）；接口与配置仍按「服务边界」设计，方便以后拆进程。
 
 ---
 
@@ -118,8 +118,20 @@ Demo-only（正式 `DemoEnabled=false` 关闭）：
 类库挂载点（过渡）：
 
 ```csharp
-services.AddRefundAgentInfrastructure(configuration);
+services.AddStayOtaAgent(configuration);   // Runtime：Redis / ChatClient / Conversation
+services.AddRefundPlugin(configuration);   // 垂直包：EF(schema) / 33 Tool / Rules / MCP
 // PathBase 可选：Hosting:PathBase=/refund-agent
+// Schema 隔离：AgentStorage:Schema=agent_refund（默认）
+```
+
+模块布局（对齐 StayOTA Scheduling）：
+
+```
+src/Modules/Agent/
+  StayOta.Agent.Abstractions   # 契约 / Options / Domain
+  StayOta.Agent                # Runtime（AddStayOtaAgent）
+  StayOta.Agent.Plugins.Refund # 退款垂直包（AddRefundPlugin）
+src/Hosts/StayOta.Agent.Host   # 独立 Host
 ```
 
 ---

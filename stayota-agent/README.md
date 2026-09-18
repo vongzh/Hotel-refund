@@ -8,6 +8,7 @@
 
 | 层 | 实现 |
 | --- | --- |
+| 模块布局 | `StayOta.Agent.Abstractions` + `StayOta.Agent` + `Plugins.Refund` + `StayOta.Agent.Host`（对齐 Scheduling） |
 | 模型接入 | `IChatClient`（默认 `DeterministicRefundChatClient`，可换成 Azure OpenAI / Foundry） |
 | Agent | `ChatClientAgent`（`Microsoft.Agents.AI`） |
 | A–L 编排 | `WorkflowBuilder` + `InProcessExecution`（`Microsoft.Agents.AI.Workflows`） |
@@ -17,6 +18,7 @@
 | 生产直连 | `Production:Mode=Mock\|Http\|Mcp`（Http 走 BaseUrl 订单/政策 API） |
 | 领域门禁 | `ToolGateway`（确认令牌 / 版本 / 幂等 / 审计）— 保留自研 |
 | 规则 / 风险 / Eval | Domain + Verifier — 保留自研 |
+| PG 隔离 | `AgentStorage:Schema=agent_refund`（默认同库 schema 隔离） |
 
 ## 已覆盖能力
 
@@ -39,7 +41,7 @@
 # 依赖：Postgres + Redis（可用 docker compose up -d）
 export PATH="$HOME/.dotnet:$PATH"
 cd backend
-dotnet run --project src/Stayota.RefundAgent.Api --urls http://127.0.0.1:5088
+dotnet run --project src/Hosts/StayOta.Agent.Host --urls http://127.0.0.1:5088
 
 cd ../frontend
 npm install && npm run dev
@@ -48,12 +50,12 @@ npm install && npm run dev
 - API Swagger: http://127.0.0.1:5088/swagger
 - MCP: http://127.0.0.1:5088/mcp
 - 前端: http://127.0.0.1:5173
-- Health 会返回 `aiProvider` / `agent` / `productionMode` / `mcpEndpoint` / `stack`
+- Health 会返回 `aiProvider` / `agent` / `productionMode` / `mcpEndpoint` / `pgSchema` / `stack`
 
 ## 测试
 
 ```bash
-cd backend && dotnet test
+cd backend && dotnet test StayOta.Agent.slnx
 curl -X POST http://127.0.0.1:5088/api/eval/run
 curl -X POST http://127.0.0.1:5088/api/workflows/run-all
 ```
