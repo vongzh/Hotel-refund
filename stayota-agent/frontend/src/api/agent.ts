@@ -1,8 +1,10 @@
 import axios from 'axios'
 import type { AgentDecision, Scenario, ToolContract } from '@/types'
 
+// Prefer same-origin + Vite proxy so Cloud/port-forward previews work.
+// Override with VITE_API_BASE_URL only when API is on another origin.
 const http = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5088',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '',
   timeout: 30000,
 })
 
