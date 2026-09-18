@@ -36,6 +36,19 @@ public sealed record HitlStateDto(
     string? ConfirmationToken,
     string Gate = "confirmation_token + expected_order_version + idempotency_key");
 
+public sealed record PendingApprovalDto(
+    string RequestId,
+    string CallId,
+    string ToolName,
+    IReadOnlyDictionary<string, object?> Arguments,
+    string Description);
+
+public sealed record FunctionApprovalRequest(
+    string SessionId,
+    string RequestId,
+    bool Approved,
+    string? Reason = null);
+
 public sealed record AgentDecisionDto(
     string TraceId,
     string RunId,
@@ -63,7 +76,18 @@ public sealed record AgentDecisionDto(
     bool VerificationPassed,
     IReadOnlyList<string> VerificationViolations,
     HitlStateDto? Hitl = null,
-    string? AiProvider = null);
+    string? AiProvider = null,
+    string? AgentSessionId = null,
+    bool AgentDriven = false,
+    bool HasPendingApprovals = false,
+    IReadOnlyList<PendingApprovalDto>? PendingApprovals = null,
+    string? ProductionMode = null);
+
+public interface IAgentOrchestrator
+{
+    Task<AgentDecisionDto> HandleAsync(AgentMessageRequest request, CancellationToken ct = default);
+    Task<AgentDecisionDto> RespondToApprovalAsync(FunctionApprovalRequest request, CancellationToken ct = default);
+}
 
 public sealed record HotelOrderDto(
     string OrderId,
@@ -94,11 +118,6 @@ public sealed record EvalResultDto(string Id, string Message, string ExpectedSce
 
 public sealed record ConfirmActionRequest(string CaseId, string OrderId, int OrderVersion, string Action, string IdempotencyKey);
 public sealed record ConfirmActionResponse(bool Success, string Message, string? ConfirmationToken = null);
-
-public interface IAgentOrchestrator
-{
-    Task<AgentDecisionDto> HandleAsync(AgentMessageRequest request, CancellationToken ct = default);
-}
 
 public interface IScenarioCatalog
 {

@@ -35,19 +35,26 @@ public sealed class DeterministicRefundChatClient : IChatClient
         var completed = list.SelectMany(m => m.Contents).OfType<FunctionResultContent>()
             .Select(f => f.CallId).ToHashSet(StringComparer.Ordinal);
         var planned = PlannedTools.Value ?? [];
-        var tools = options?.Tools?.OfType<AIFunction>().ToDictionary(t => t.Name, StringComparer.Ordinal)
+        var tools = options?.Tools?.OfType<AIFunction>()
+                        .GroupBy(t => t.Name, StringComparer.Ordinal)
+                        .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal)
                     ?? new Dictionary<string, AIFunction>(StringComparer.Ordinal);
+        var toolNames = options?.Tools?
+            .Select(t => t.Name)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToHashSet(StringComparer.Ordinal)
+            ?? new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var toolName in planned)
         {
             var callId = $"call_{toolName}";
             if (completed.Contains(callId)) continue;
-            if (!tools.ContainsKey(toolName) && !tools.Keys.Any(k => k.Equals(toolName, StringComparison.Ordinal)))
+            if (!tools.ContainsKey(toolName) && !toolNames.Contains(toolName))
                 continue;
 
             return Task.FromResult(new ChatResponse([
                 new ChatMessage(ChatRole.Assistant, [
-                    new FunctionCallContent(callId, toolName)
+                    new FunctionCallContent(callId, toolName, new Dictionary<string, object?>())
                 ])
             ]));
         }

@@ -14,9 +14,12 @@ public sealed class AgentOrchestrator(
     IRulesEngine rules,
     IRefundAiToolCatalog tools,
     IRefundAgentHost agentHost,
+    IAgentConversationService conversation,
+    IAgentSessionStore agentSessionStore,
     IConfirmationStore confirmationStore,
     ISessionStore sessionStore,
     IVerifier verifier,
+    IProductionOrderClient production,
     ILogger<AgentOrchestrator> logger) : IAgentOrchestrator
 {
     private readonly ScenarioRouter _router = new();
@@ -52,7 +55,7 @@ public sealed class AgentOrchestrator(
 
         await tools.InvokeAsync(Read(traceId, "list_user_orders", userId, order, scenario, "INTENT_READY"), ct);
         var orderTool = await tools.InvokeAsync(Read(traceId, "get_order_detail", userId, order, scenario, "ORDER_CONFIRMED"), ct);
-        steps.Add(new("订单查询", orderTool.Allowed ? "success" : "error", $"status={order.Status}, on_site={order.UserOnSite}"));
+        steps.Add(new("订单查询", orderTool.Allowed ? "success" : "error", $"status={order.Status}, on_site={order.UserOnSite}, source={production.Mode}"));
 
         var matches = retrieval.Retrieve(order, policy, analyzed.Reason);
         await tools.InvokeAsync(Read(traceId, "get_policy_snapshot", userId, order, scenario, "ORDER_CONFIRMED"), ct);
@@ -65,18 +68,19 @@ public sealed class AgentOrchestrator(
         var requiredTools = JsonSerializer.Deserialize<List<string>>(scenario.RequiredToolsJson) ?? [];
         var executed = new List<string>();
         string? confirmationToken = null;
+        var writeToolName = scenario.ScenarioId == "I" ? "submit_order_change" : "submit_cancellation";
+        var deferWriteToFunctionApproval = decision.NeedsUserConfirm && !request.ConfirmWrite;
 
         if (decision.NeedsUserConfirm)
         {
             confirmationToken = await confirmationStore.IssueAsync(
                 scenario.CaseId, order.OrderId, order.Version,
-                scenario.ScenarioId == "I" ? "submit_order_change" : "submit_cancellation",
+                writeToolName,
                 TimeSpan.FromMinutes(10), ct);
         }
 
         foreach (var toolName in requiredTools.Distinct())
         {
-            // Skip heavy writes unless confirmed or non-confirm tools
             var access = ToolGatewayWrite(toolName) ? ToolAccess.Write : ToolAccess.Read;
             var args = new Dictionary<string, object?>
             {
@@ -91,16 +95,14 @@ public sealed class AgentOrchestrator(
             int? version = null;
             if (toolName is "submit_cancellation" or "submit_order_change" or "accept_supplier_offer" or "reserve_mock_alternative")
             {
-                if (!(request.ConfirmWrite && confirmationToken is not null))
-                {
-                    continue;
-                }
+                // Defer confirm-required writes to official FunctionApproval when not yet confirmed.
+                if (deferWriteToFunctionApproval) continue;
+                if (!(request.ConfirmWrite && confirmationToken is not null)) continue;
                 token = request.ConfirmationToken ?? confirmationToken;
                 idem = request.IdempotencyKey ?? $"idem-{scenario.ScenarioId}-{order.OrderId}-{toolName}";
                 version = order.Version;
             }
 
-            // For supplier/evidence/handoff tools, execute when path reaches them
             if (toolName is "submit_evidence_metadata" or "extract_evidence_fields" or "create_exception_review")
             {
                 if (!signals.HasEvidence) continue;
@@ -111,7 +113,6 @@ public sealed class AgentOrchestrator(
             }
 
             var toolState = ToolStates.GetValueOrDefault(toolName, "DECISION_READY");
-            // scenario-specific overrides aligned with Hotel-refund workflow
             if (scenario.ScenarioId == "H" && toolName == "create_human_handoff") toolState = "WAITING_EXTERNAL";
             if (scenario.ScenarioId == "K" && toolName == "create_human_handoff") toolState = "DECISION_READY";
             if ((scenario.ScenarioId is "E" or "L" or "D") && toolName == "create_human_handoff") toolState = "OPTION_PRESENTED";
@@ -122,13 +123,11 @@ public sealed class AgentOrchestrator(
             if (result.Allowed) executed.Add(toolName);
         }
 
-        // Ensure quote + permission always attempted
         await tools.InvokeAsync(new ToolCall(traceId, "calculate_refund_quote", ToolAccess.Read, userId, order.OrderId, scenario.CaseId, decision.RiskLevel, "DECISION_READY",
             new Dictionary<string, object?> { ["refund"] = decision.RefundAmount, ["fee"] = decision.FeeAmount }), ct);
         await tools.InvokeAsync(new ToolCall(traceId, "validate_action_permission", ToolAccess.Read, userId, order.OrderId, scenario.CaseId, decision.RiskLevel, "DECISION_READY",
             new Dictionary<string, object?> { ["action"] = decision.Action }), ct);
 
-        // Side effects for key actions
         if (decision.Action is "HumanHandoff" or "Recovery" or "FinanceReview" or "ServiceDispute" or "SpecialReview")
         {
             var handoff = await tools.InvokeAsync(new ToolCall(traceId, "create_human_handoff", ToolAccess.Write, userId, order.OrderId, scenario.CaseId, decision.RiskLevel, scenario.ScenarioId switch { "H" => "WAITING_EXTERNAL", "K" => "DECISION_READY", _ => "OPTION_PRESENTED" },
@@ -183,9 +182,63 @@ public sealed class AgentOrchestrator(
         {
             hitl = new HitlStateDto(
                 true,
-                scenario.ScenarioId == "I" ? "submit_order_change" : "submit_cancellation",
-                confirmationToken);
+                writeToolName,
+                confirmationToken,
+                deferWriteToFunctionApproval
+                    ? "FunctionApproval (ToolApprovalRequestContent) + confirmation_token + version + idempotency"
+                    : "confirmation_token + expected_order_version + idempotency_key");
         }
+
+        var suggestedReply = BuildReply(decision, order);
+        var ambient = new Dictionary<string, object?>
+        {
+            ["refund"] = decision.RefundAmount,
+            ["fee"] = decision.FeeAmount,
+            ["summary"] = decision.Conclusion,
+            ["reason"] = analyzed.Reason,
+            ["action"] = decision.Action
+        };
+
+        // Drive ChatClientAgent: dialogue + official FunctionApproval for confirm-required writes.
+        var plannedForAgent = new List<string>();
+        if (deferWriteToFunctionApproval)
+            plannedForAgent.Add(writeToolName);
+        else if (executed.Count > 0)
+            plannedForAgent.AddRange(executed.Take(2));
+
+        var agentTurn = await conversation.RunTurnAsync(new AgentTurnRequest(
+            request.Message,
+            traceId,
+            userId,
+            order.OrderId,
+            scenario.CaseId,
+            scenario.ScenarioId,
+            decision.RiskLevel,
+            decision.ConversationState,
+            plannedForAgent,
+            suggestedReply,
+            deferWriteToFunctionApproval,
+            deferWriteToFunctionApproval ? writeToolName : null,
+            ambient,
+            confirmationToken,
+            request.IdempotencyKey ?? (deferWriteToFunctionApproval ? $"idem-{scenario.ScenarioId}-{order.OrderId}-{writeToolName}" : null),
+            deferWriteToFunctionApproval ? order.Version : null), ct);
+
+        steps.Add(new(
+            "Agent 驱动",
+            agentTurn.AgentDriven ? "success" : "warning",
+            agentTurn.HasPendingApprovals
+                ? $"FunctionApproval 待批 ×{agentTurn.PendingApprovals.Count}"
+                : $"provider={agentHost.ProviderName}, tools={string.Join(',', agentTurn.ToolsInvoked)}"));
+
+        foreach (var t in agentTurn.ToolsInvoked)
+        {
+            if (!executed.Contains(t)) executed.Add(t);
+        }
+
+        var pendingApprovals = agentTurn.PendingApprovals
+            .Select(p => new PendingApprovalDto(p.RequestId, p.CallId, p.ToolName, p.Arguments, p.Description))
+            .ToList();
 
         var refundCase = new RefundCase
         {
@@ -203,39 +256,124 @@ public sealed class AgentOrchestrator(
             UpdatedAt = DateTimeOffset.UtcNow
         };
         await store.UpsertCaseAsync(refundCase, ct);
-        await store.AppendEventAsync(scenario.CaseId, "agent_decision", new { decision.Action, decision.RuleCode, executed, confirmationToken }, ct);
+        await store.AppendEventAsync(scenario.CaseId, "agent_decision", new
+        {
+            decision.Action,
+            decision.RuleCode,
+            executed,
+            confirmationToken,
+            agentSessionId = agentTurn.SessionId,
+            pendingApprovals = pendingApprovals.Select(p => p.ToolName)
+        }, ct);
 
         var run = new WorkflowRun
         {
             RunId = runId,
             CaseId = scenario.CaseId,
             ScenarioId = scenario.ScenarioId,
-            Status = "COMPLETED",
+            Status = agentTurn.HasPendingApprovals ? "WAITING_APPROVAL" : "COMPLETED",
             TraceJson = JsonSerializer.Serialize(steps),
             ToolSequenceJson = JsonSerializer.Serialize(executed.Distinct()),
             StartedAt = DateTimeOffset.UtcNow,
             CompletedAt = DateTimeOffset.UtcNow
         };
         await store.SaveWorkflowRunAsync(run, ct);
-        await sessionStore.SetAsync($"session:{userId}:{order.OrderId}", JsonSerializer.Serialize(new { scenario.CaseId, runId, confirmationToken }), TimeSpan.FromHours(6), ct);
+        await sessionStore.SetAsync(
+            $"session:{userId}:{order.OrderId}",
+            JsonSerializer.Serialize(new { scenario.CaseId, runId, confirmationToken, agentSessionId = agentTurn.SessionId }),
+            TimeSpan.FromHours(6), ct);
 
         logger.LogInformation(
-            "Scenario {Scenario} action {Action} aiProvider={Provider} agent={Agent}",
-            scenario.ScenarioId, decision.Action, agentHost.ProviderName, agentHost.Agent.Name);
+            "Scenario {Scenario} action {Action} aiProvider={Provider} agentDriven={Driven} pendingApprovals={Pending} production={Mode}",
+            scenario.ScenarioId, decision.Action, agentHost.ProviderName, agentTurn.AgentDriven,
+            pendingApprovals.Count, production.Mode);
 
         var dto = new AgentDecisionDto(
             traceId, runId, scenario.CaseId, scenario.ScenarioId,
             analyzed.Intent, analyzed.Confidence, decision.RiskLevel, decision.RiskScore,
             decision.Action, decision.Conclusion, decision.PlanTitle, decision.PlanCopy,
             decision.RefundAmount, decision.FeeAmount,
-            BuildReply(decision, order),
+            agentTurn.Reply,
             decision.ConversationState, decision.CaseStatus,
             steps, analyzed.Slots, matches, executed.Distinct().ToList(), ticket,
             new HotelOrderDto(order.OrderId, order.HotelName, order.CheckIn, order.CheckOut, order.PaidAmount, order.Currency,
                 order.Status, order.UserOnSite, order.PolicyId, order.Version, order.RoomType, order.RoomCount),
-            false, Array.Empty<string>(), hitl, agentHost.ProviderName);
+            false, Array.Empty<string>(), hitl, agentHost.ProviderName,
+            agentTurn.SessionId, agentTurn.AgentDriven, agentTurn.HasPendingApprovals, pendingApprovals, production.Mode);
         var verification = verifier.VerifyDecision(dto);
         return dto with { VerificationPassed = verification.Passed, VerificationViolations = verification.Violations };
+    }
+
+    public async Task<AgentDecisionDto> RespondToApprovalAsync(FunctionApprovalRequest request, CancellationToken ct = default)
+    {
+        var snapshot = await agentSessionStore.GetAsync(request.SessionId, ct)
+                       ?? throw new InvalidOperationException("agent session not found or expired");
+
+        var agentTurn = await conversation.RespondToApprovalAsync(
+            new ApprovalResponseRequest(request.SessionId, request.RequestId, request.Approved, request.Reason), ct);
+
+        var order = await store.GetOrderAsync(snapshot.OrderId, ct)
+                    ?? throw new InvalidOperationException($"missing order {snapshot.OrderId}");
+        var risk = Enum.TryParse<RiskLevel>(snapshot.RiskLevel, out var rl) ? rl : RiskLevel.L1;
+        var pending = agentTurn.PendingApprovals
+            .Select(p => new PendingApprovalDto(p.RequestId, p.CallId, p.ToolName, p.Arguments, p.Description))
+            .ToList();
+
+        await store.AppendEventAsync(snapshot.CaseId, "function_approval", new
+        {
+            request.RequestId,
+            request.Approved,
+            request.Reason,
+            tools = agentTurn.ToolsInvoked
+        }, ct);
+
+        var steps = new List<DecisionStepDto>
+        {
+            new("FunctionApproval", request.Approved ? "success" : "warning",
+                request.Approved ? $"已批准 {request.RequestId}" : $"已拒绝 {request.RequestId}"),
+            new("Agent 续跑", agentTurn.AgentDriven ? "success" : "warning",
+                agentTurn.HasPendingApprovals
+                    ? $"仍有待批 ×{pending.Count}"
+                    : string.Join(',', agentTurn.ToolsInvoked))
+        };
+
+        var dto = new AgentDecisionDto(
+            snapshot.TraceId,
+            $"apr_{Guid.NewGuid():N}"[..16],
+            snapshot.CaseId,
+            string.IsNullOrWhiteSpace(snapshot.ScenarioId) ? "A" : snapshot.ScenarioId,
+            "function_approval",
+            1.0,
+            risk,
+            risk == RiskLevel.L3 ? 90 : 40,
+            request.Approved ? "WriteApproved" : "WriteRejected",
+            agentTurn.Reply,
+            request.Approved ? "写操作已批准" : "写操作已拒绝",
+            agentTurn.Reply,
+            null, null,
+            agentTurn.Reply,
+            snapshot.ConversationState,
+            request.Approved ? "REFUND_INITIATED" : "AWAITING_USER",
+            steps,
+            new Dictionary<string, string>(),
+            [],
+            agentTurn.ToolsInvoked.ToList(),
+            null,
+            new HotelOrderDto(order.OrderId, order.HotelName, order.CheckIn, order.CheckOut, order.PaidAmount, order.Currency,
+                order.Status, order.UserOnSite, order.PolicyId, order.Version, order.RoomType, order.RoomCount),
+            true, Array.Empty<string>(),
+            pending.Count > 0
+                ? new HitlStateDto(true, pending[0].ToolName, snapshot.ConfirmationToken,
+                    "FunctionApproval (ToolApprovalRequestContent)")
+                : null,
+            agentHost.ProviderName,
+            agentTurn.SessionId,
+            agentTurn.AgentDriven,
+            agentTurn.HasPendingApprovals,
+            pending,
+            production.Mode);
+
+        return dto;
     }
 
     private static IReadOnlyList<TicketLifecycleStepDto> BuildTicketLifecycle(string action, RiskLevel risk, string caseStatus)
@@ -288,7 +426,6 @@ public sealed class AgentOrchestrator(
         ["reserve_mock_alternative"] = "OPTION_PRESENTED",
     };
 
-
     private static bool NeedsEvidence(string scenarioId, AgentSignals signals) =>
         scenarioId is "G" || (scenarioId is "F" && !signals.HasNegotiationReason);
 
@@ -318,14 +455,12 @@ public sealed class EvalRunner(IRefundDataStore store, IAgentOrchestrator orches
         var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../eval/agent-eval-cases.json"));
         if (!File.Exists(path))
             path = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../eval/agent-eval-cases.json"));
-        // fallback relative to stayota-agent root via env
         var root = Environment.GetEnvironmentVariable("STAYOTA_AGENT_ROOT");
         if (!string.IsNullOrWhiteSpace(root))
             path = Path.Combine(root, "eval/agent-eval-cases.json");
 
         if (!File.Exists(path))
         {
-            // generate from known set if file missing at runtime
             return ScenarioCodes.All.SelectMany(s => Enumerable.Range(1, 3).Select(i =>
                 new EvalCaseDto($"EVAL-{s}-{i:00}", $"scenario {s} sample {i}", s, "L1"))).ToList();
         }

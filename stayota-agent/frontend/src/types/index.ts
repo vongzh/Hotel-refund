@@ -45,6 +45,14 @@ export interface HitlState {
   gate?: string
 }
 
+export interface PendingApproval {
+  requestId: string
+  callId: string
+  toolName: string
+  arguments: Record<string, unknown>
+  description: string
+}
+
 export interface AgentDecision {
   traceId: string
   runId: string
@@ -86,6 +94,11 @@ export interface AgentDecision {
   verificationViolations: string[]
   hitl?: HitlState
   aiProvider?: string
+  agentSessionId?: string
+  agentDriven?: boolean
+  hasPendingApprovals?: boolean
+  pendingApprovals?: PendingApproval[]
+  productionMode?: string
 }
 
 export interface ToolContract {

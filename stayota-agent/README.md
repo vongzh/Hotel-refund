@@ -12,6 +12,9 @@
 | Agent | `ChatClientAgent`（`Microsoft.Agents.AI`） |
 | A–L 编排 | `WorkflowBuilder` + `InProcessExecution`（`Microsoft.Agents.AI.Workflows`） |
 | 33 Tool | `AIFunctionFactory` + `ApprovalRequiredAIFunction`（确认类写操作） |
+| FunctionApproval | `ToolApprovalRequestContent` → `POST /api/agent/approvals` |
+| MCP | `MapMcp("/mcp")` + `RefundMcpTools`；`Production:Mode=Mcp` 可拉外部工具 |
+| 生产直连 | `Production:Mode=Mock\|Http\|Mcp`（Http 走 BaseUrl 订单/政策 API） |
 | 领域门禁 | `ToolGateway`（确认令牌 / 版本 / 幂等 / 审计）— 保留自研 |
 | 规则 / 风险 / Eval | Domain + Verifier — 保留自研 |
 
@@ -26,6 +29,9 @@
 - Tool `allowed_conversation_states` 白名单门禁
 - Verifier 决策/工作流断言
 - 前端三页：Agent 设计 / 智能处理台 / 运营看板
+- ChatClientAgent 真正驱动对话（Deterministic / OpenAI / Ollama）
+- 官方 FunctionApproval 流（待批 UI + `/api/agent/approvals`）
+- MCP 暴露 `/mcp` + 生产直连 `Mock|Http|Mcp`
 
 ## 启动
 
@@ -40,8 +46,9 @@ npm install && npm run dev
 ```
 
 - API Swagger: http://127.0.0.1:5088/swagger
+- MCP: http://127.0.0.1:5088/mcp
 - 前端: http://127.0.0.1:5173
-- Health 会返回 `aiProvider` / `agent` / `stack`
+- Health 会返回 `aiProvider` / `agent` / `productionMode` / `mcpEndpoint` / `stack`
 
 ## 测试
 

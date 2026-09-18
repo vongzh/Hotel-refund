@@ -23,6 +23,16 @@ export async function runAgentMessage(payload: Record<string, unknown>) {
   return data
 }
 
+export async function respondToApproval(payload: {
+  sessionId: string
+  requestId: string
+  approved: boolean
+  reason?: string
+}) {
+  const { data } = await http.post<AgentDecision>('/api/agent/approvals', payload)
+  return data
+}
+
 export async function runEval() {
   const { data } = await http.post('/api/eval/run')
   return data as { total: number; passed: number; failed: number; results: unknown[] }

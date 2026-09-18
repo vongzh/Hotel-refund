@@ -35,13 +35,16 @@ app.UseSwagger();
 app.UseSwaggerUI();
 app.UseCors();
 app.MapControllers();
+app.MapMcp("/mcp");
 app.MapGet("/health", async (
     AppDbContext db,
     IToolGateway tools,
     Stayota.RefundAgent.Application.Ai.IRefundAiToolCatalog aiTools,
     Stayota.RefundAgent.Application.Ai.IRefundAgentHost agentHost,
     Stayota.RefundAgent.Infrastructure.Ai.IChatClientFactory chatClientFactory,
-    Microsoft.Extensions.Options.IOptions<Stayota.RefundAgent.Application.Ai.AiOptions> aiOptions) =>
+    Microsoft.Extensions.Options.IOptions<Stayota.RefundAgent.Application.Ai.AiOptions> aiOptions,
+    Microsoft.Extensions.Options.IOptions<Stayota.RefundAgent.Application.Ai.ProductionOptions> productionOptions,
+    Stayota.RefundAgent.Application.Ai.IProductionOrderClient production) =>
 {
     var scenarios = await db.Scenarios.CountAsync();
     return Results.Ok(new
@@ -54,13 +57,18 @@ app.MapGet("/health", async (
         aiConfiguredProvider = aiOptions.Value.Provider,
         aiResolvedProvider = chatClientFactory.ProviderName,
         agent = agentHost.Agent.Name,
+        productionMode = production.Mode,
+        productionConfigured = productionOptions.Value.Mode,
+        mcpEndpoint = "/mcp",
         stack = new
         {
             meai = "Microsoft.Extensions.AI",
             agentFramework = "Microsoft.Agents.AI",
             workflows = "Microsoft.Agents.AI.Workflows",
             openAi = "Microsoft.Extensions.AI.OpenAI",
-            ollama = "OllamaSharp"
+            ollama = "OllamaSharp",
+            mcp = "ModelContextProtocol.AspNetCore",
+            functionApproval = "ApprovalRequiredAIFunction / ToolApprovalRequestContent"
         },
         database = "postgresql",
         cache = "redis",

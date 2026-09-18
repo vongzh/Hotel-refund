@@ -33,6 +33,21 @@ public sealed class AgentController(
         }
     }
 
+    [HttpPost("agent/approvals")]
+    public async Task<ActionResult<AgentDecisionDto>> RespondToApproval(
+        [FromBody] FunctionApprovalRequest request, CancellationToken ct)
+    {
+        try
+        {
+            var result = await orchestrator.RespondToApprovalAsync(request, ct);
+            return Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpPost("workflows/{scenarioId}/run")]
     public async Task<ActionResult<WorkflowRunResultDto>> RunWorkflow(string scenarioId, CancellationToken ct)
     {

@@ -120,15 +120,19 @@
               Verifier {{ decision.verificationPassed ? '通过' : '未通过' }}
             </span>
           </div>
-          <div v-if="decision.hitl?.requiresConfirmation" class="hitl-banner">
+          <div v-if="decision.hitl?.requiresConfirmation || decision.hasPendingApprovals" class="hitl-banner">
             <div>
-              <strong>HITL 写门禁待确认</strong>
-              <p>
-                动作 <code>{{ decision.hitl.pendingAction }}</code>
-                · {{ decision.hitl.gate }}
+              <strong>{{ decision.hasPendingApprovals ? '官方 FunctionApproval 待批' : 'HITL 写门禁待确认' }}</strong>
+              <p v-if="decision.hasPendingApprovals && decision.pendingApprovals?.length">
+                Tool <code>{{ decision.pendingApprovals[0].toolName }}</code>
+                · {{ decision.pendingApprovals[0].description }}
+              </p>
+              <p v-else>
+                动作 <code>{{ decision.hitl?.pendingAction }}</code>
+                · {{ decision.hitl?.gate }}
               </p>
             </div>
-            <span class="status-pill warning">ApprovalRequired</span>
+            <span class="status-pill warning">{{ decision.hasPendingApprovals ? 'ToolApprovalRequest' : 'ApprovalRequired' }}</span>
           </div>
           <div class="action-ctas">
             <button
@@ -143,14 +147,20 @@
               :disabled="loading"
               @click="withReason"
             >补充无法入住原因</button>
+            <template v-if="decision.hasPendingApprovals && decision.pendingApprovals?.length && decision.agentSessionId">
+              <button class="primary-btn" :disabled="loading" @click="approveFunction(true)">批准执行</button>
+              <button class="ghost-btn" :disabled="loading" @click="approveFunction(false)">拒绝</button>
+            </template>
             <button
-              v-if="decision.action === 'ConfirmCancel' || decision.action === 'ChangeOrder' || decision.hitl?.requiresConfirmation"
+              v-else-if="decision.action === 'ConfirmCancel' || decision.action === 'ChangeOrder' || decision.hitl?.requiresConfirmation"
               class="primary-btn"
               :disabled="loading"
               @click="confirmWrite"
             >确认执行写操作</button>
             <span class="status-pill info">{{ decision.conversationState }}</span>
             <span v-if="decision.aiProvider" class="status-pill neutral">AI · {{ decision.aiProvider }}</span>
+            <span v-if="decision.agentDriven" class="status-pill success">Agent 驱动</span>
+            <span v-if="decision.productionMode" class="status-pill neutral">Prod · {{ decision.productionMode }}</span>
           </div>
         </div>
 
@@ -283,7 +293,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { fetchScenarios, runAgentMessage } from '@/api/agent'
+import { fetchScenarios, runAgentMessage, respondToApproval } from '@/api/agent'
 import type { AgentDecision, Scenario } from '@/types'
 
 const scenarios = ref<Scenario[]>([])
@@ -337,6 +347,26 @@ async function confirmWrite() {
     confirmWrite: true,
     idempotencyKey: `ui-${activeId.value}-${Date.now()}`,
   })
+}
+async function approveFunction(approved: boolean) {
+  const d = decision.value
+  const pending = d?.pendingApprovals?.[0]
+  if (!d?.agentSessionId || !pending) return
+  loading.value = true
+  errorText.value = ''
+  try {
+    decision.value = await respondToApproval({
+      sessionId: d.agentSessionId,
+      requestId: pending.requestId,
+      approved,
+      reason: approved ? '用户批准写操作' : '用户拒绝写操作',
+    })
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { message?: string } } }
+    errorText.value = err.response?.data?.message || 'FunctionApproval 失败'
+  } finally {
+    loading.value = false
+  }
 }
 async function runBoundary(flags: Record<string, boolean>) {
   await run({
@@ -396,6 +426,7 @@ function riskTone(level?: string) {
 }
 function actionLabel(action: string) {
   return ({
+    WriteApproved: '写操作已批准', WriteRejected: '写操作已拒绝',
     ConfirmCancel: '确认取消', RequestEvidence: '补充材料', RequestInformation: '补充信息',
     NegotiateWithHotel: '酒店协商', HumanHandoff: '转人工', ExplainProgress: '同步进度',
     Clarify: '澄清', ChangeOrder: '改期', FinanceReview: '财务核验', SpecialReview: '特殊审核',
